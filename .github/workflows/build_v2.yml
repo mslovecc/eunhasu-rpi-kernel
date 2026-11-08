@@ -558,6 +558,65 @@ jobs:
           echo "========================================"
 
       # --------------------------------------------------
+      # 8.5 Diagnose ARM architecture configuration
+      # --------------------------------------------------
+
+      - name: Diagnose ARM architecture configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          cd "$SRC"
+
+          echo "========================================"
+          echo " ARM ARCHITECTURE DIAGNOSTICS"
+          echo "========================================"
+
+          echo
+          echo "[1] ARM CPU configuration"
+
+          grep -E \
+            '^(CONFIG_CPU_V[0-9]+|CONFIG_CPU_32v[0-9]+|CONFIG_ARCH_MULTI_V[0-9]+|CONFIG_THUMB2_KERNEL|CONFIG_AEABI|CONFIG_OABI_COMPAT)=' \
+            .config || true
+
+          echo
+          echo "[2] Explicit unset ARM CPU configuration"
+
+          grep -E \
+            '^# CONFIG_(CPU_V[0-9]+|CPU_32v[0-9]+|ARCH_MULTI_V[0-9]+) is not set' \
+            .config || true
+
+          echo
+          echo "[3] Compiler target"
+
+          "${CROSS_COMPILE}gcc" -dumpmachine
+          "${CROSS_COMPILE}gcc" -dumpversion
+
+          echo
+          echo "[4] Compiler ARM architecture macros"
+
+          "${CROSS_COMPILE}gcc" -dM -E -x c /dev/null \
+            | grep -E '__ARM_ARCH|__ARM_ARCH_ISA|__thumb__|__thumb2__' \
+            | sort || true
+
+          echo
+          echo "[5] Kernel ARM architecture selection"
+
+          grep -n '__LINUX_ARM_ARCH__' \
+            arch/arm/Makefile \
+            arch/arm/include/asm/vermagic.h || true
+
+          echo
+          echo "[6] Current kernel release"
+
+          make -s ARCH=arm \
+            CROSS_COMPILE="$CROSS_COMPILE" \
+            kernelrelease
+
+          echo
+          echo "ARM diagnostics completed."
+
+      # --------------------------------------------------
       # 9. Build kernel
       # --------------------------------------------------
 
