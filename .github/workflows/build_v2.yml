@@ -390,45 +390,53 @@ jobs:
             CROSS_COMPILE="$CROSS_COMPILE" \
             olddefconfig
             
-            echo "========================================"
-            echo " LOCALVERSION DIAGNOSTICS"
-            echo "========================================"
+      - name: Diagnose Kbuild LOCALVERSION
+        shell: bash
+        run: |
+          cd "$SRC"
 
-            echo
-            echo "[1] Expected kernel release:"
-            echo "$KERNEL_RELEASE"
+          echo "========================================"
+          echo " KBUILD LOCALVERSION DEEP DIAGNOSTICS"
+          echo "========================================"
 
-            echo
-            echo "[2] Derived LOCAL_SUFFIX:"
-            echo "LOCAL_SUFFIX=[$LOCAL_SUFFIX]"
+          echo
+          echo "[1] .config:"
+          grep -E '^(CONFIG_LOCALVERSION=|# CONFIG_LOCALVERSION)' .config || true
 
-            echo
-            echo "[3] CONFIG_LOCALVERSION in .config:"
-            grep -n 'LOCALVERSION' .config || true
+          echo
+          echo "[2] include/config/auto.conf:"
+          if [[ -f include/config/auto.conf ]]; then
+              grep -E '^CONFIG_LOCALVERSION=' include/config/auto.conf || true
+          else
+              echo "auto.conf does not exist"
+          fi
 
-            echo
-            echo "[4] Kernel Makefile version:"
-            grep -nE '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile
+          echo
+          echo "[3] include/config/auto.conf.cmd:"
+          if [[ -f include/config/auto.conf.cmd ]]; then
+              ls -l include/config/auto.conf.cmd
+          else
+              echo "auto.conf.cmd does not exist"
+          fi
 
-            echo
-            echo "[5] Generated kernel.release:"
-            if [[ -f include/config/kernel.release ]]; then
-                cat include/config/kernel.release
-            else
-                echo "include/config/kernel.release does not exist"
-            fi
+          echo
+          echo "[4] setlocalversion output:"
+          bash scripts/setlocalversion . || true
 
-            echo
-            echo "[6] Kernel release from Kbuild:"
-            make -s ARCH=arm \
-                CROSS_COMPILE="$CROSS_COMPILE" \
-                kernelrelease
+          echo
+          echo "[5] LOCALVERSION environment:"
+          env | grep -E '^(LOCALVERSION|KERNELVERSION|KERNELRELEASE)=' || true
 
-            echo
-            echo "========================================"
-            echo " END LOCALVERSION DIAGNOSTICS"
-            echo "========================================"
+          echo
+          echo "[6] Kbuild kernelrelease:"
+          make -s ARCH=arm \
+              CROSS_COMPILE="$CROSS_COMPILE" \
+              kernelrelease
 
+          echo
+          echo "========================================"
+          echo " END DEEP DIAGNOSTICS"
+          echo "========================================"
 
           ACTUAL_RELEASE="$(make -s ARCH=arm \
             CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
