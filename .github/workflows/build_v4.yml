@@ -940,6 +940,37 @@ jobs:
 
           depmod -b "$PKG" "$KERNEL_RELEASE"
 
+          # Build a module-only initramfs matching this exact kernel release.
+          # The original Eunhasu initramfs7 is an uncompressed newc CPIO
+          # containing usr/lib/modules/<release>/ and no /init userspace.
+          INITRD_ROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
+          rm -rf "$INITRD_ROOT"
+          install -d "$INITRD_ROOT/usr/lib/modules"
+          cp -a "$PKG/lib/modules/$KERNEL_RELEASE" \
+            "$INITRD_ROOT/usr/lib/modules/"
+
+          (
+            cd "$INITRD_ROOT"
+            find . -print0 | LC_ALL=C sort -z \
+              | cpio --null --create --format=newc --owner=0:0
+          ) > "$PKG/boot/initramfs7"
+
+          test -s "$PKG/boot/initramfs7"
+          cpio -it < "$PKG/boot/initramfs7" \
+            > "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" \
+            "$PKG/build-info/initramfs7.contents.txt"
+
+          if grep -Eq '(^|/)init$|6\\.18\\.34\\+rpt-rpi-v7' \
+            "$PKG/build-info/initramfs7.contents.txt"; then
+            echo "::error::Unexpected init or old-kernel module path in initramfs7."
+            exit 1
+          fi
+
+          file "$PKG/boot/initramfs7"
+          sha256sum "$PKG/boot/initramfs7" \
+            | tee "$PKG/build-info/initramfs7.sha256"
+
           # Build information
 
           install -m 0644 "$SRC/.config" \
@@ -974,6 +1005,9 @@ jobs:
 
           Device tree:
           boot/bcm2836-rpi-2-b.dtb
+
+          Initramfs:
+          boot/initramfs7 (uncompressed newc CPIO, modules only)
 
           Kernel modules:
           lib/modules/$KERNEL_RELEASE/
