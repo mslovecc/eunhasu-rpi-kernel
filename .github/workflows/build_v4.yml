@@ -455,6 +455,22 @@ jobs:
           make ARCH=arm \
             CROSS_COMPILE="$CROSS_COMPILE" \
             syncconfig
+
+            echo
+            echo "===== A20 required configuration validation ====="
+
+            for sym in \
+              CONFIG_HARDENED_USERCOPY \
+              CONFIG_FORTIFY_SOURCE \
+              CONFIG_HIGHMEM; do
+
+              if ! grep -qx "${sym}=y" .config; then
+                echo "::error::Required A20 configuration missing: $sym"
+                exit 1
+              fi
+
+              echo "OK: ${sym}=y"
+            done
             
           # ----------------------------------------------
           # 8.5.1 Enforce ARMv7-only configuration
@@ -728,6 +744,28 @@ jobs:
           echo "===== 6. Module.symvers metadata ====="
           ls -lh Module.symvers vmlinux 2>/dev/null || true
 
+          echo
+          echo "===== FORTIFY implementation ====="
+
+          grep -R -n -E \
+            'fortify_panic|__fortify_panic|EXPORT_SYMBOL.*fortify' \
+            lib include mm \
+            --include='*.c' --include='*.h' || true
+
+          echo
+          echo "===== HARDENED_USERCOPY implementation ====="
+
+          grep -n -E \
+            'HARDENED_USERCOPY|__check_object_size|EXPORT_SYMBOL' \
+            mm/usercopy.c || true
+
+          echo
+          echo "===== HIGHMEM implementation ====="
+
+          grep -n -E \
+            'CONFIG_HIGHMEM|page_address|EXPORT_SYMBOL' \
+            mm/highmem.c || true
+
       # --------------------------------------------------
       # 10. Verify vermagic and symbol coverage
       # --------------------------------------------------
@@ -759,6 +797,27 @@ jobs:
             echo "::error::Built kernel module vermagic mismatch."
             exit 1
           fi
+
+          echo
+          echo "===== A20 required kernel exports validation ====="
+
+          for sym in \
+            __check_object_size \
+            fortify_panic \
+            page_address; do
+
+            if ! awk -v s="$sym" \
+              '$2 == s {found=1} END {exit !found}' \
+              "$SRC/Module.symvers"; then
+
+              echo "::error::Missing required A20 export: $sym"
+              exit 1
+            fi
+
+            echo "OK: $sym"
+          done
+
+          echo "All required A20 kernel exports are present."
 
           REPORT="$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
 
