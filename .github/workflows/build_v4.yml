@@ -424,6 +424,8 @@ jobs:
             --disable PREEMPT_RT \
             --disable THUMB2_KERNEL \
             --enable BLK_DEV_INITRD \
+            --enable RD_GZIP \
+            --enable MODULE_COMPRESS_XZ \
             --enable DEVTMPFS \
             --enable DEVTMPFS_MOUNT \
             --enable MMC \
@@ -456,8 +458,27 @@ jobs:
             CROSS_COMPILE="$CROSS_COMPILE" \
             syncconfig
 
-            echo
-            echo "===== A20 required configuration validation ====="
+          echo
+          echo "===== Raspberry Pi 2 boot-critical configuration ====="
+
+          for sym in \
+            CONFIG_MMC=y \
+            CONFIG_MMC_BLOCK=y \
+            CONFIG_MMC_BCM2835=y \
+            CONFIG_BLK_DEV_INITRD=y \
+            CONFIG_RD_GZIP=y \
+            CONFIG_MODULE_COMPRESS_XZ=y; do
+
+            if ! grep -qx "$sym" .config; then
+              echo "::error::Required boot/module configuration missing: $sym"
+              exit 1
+            fi
+
+            echo "OK: $sym"
+          done
+
+          echo
+          echo "===== A20 required configuration validation ====="
 
             for sym in \
               CONFIG_HARDENED_USERCOPY \
@@ -697,6 +718,13 @@ jobs:
           test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
           test -s "$SRC/Module.symvers"
           test -s "$SRC/System.map"
+
+          # MMC_BCM2835 is the BCM2835 SDHOST controller driver (not SDHCI).
+          # Require it to be built into the kernel for reliable SD-card boot.
+          grep -qx 'CONFIG_MMC_BCM2835=y' "$SRC/.config"
+          grep -Fqx 'kernel/drivers/mmc/host/bcm2835.ko' "$SRC/modules.builtin"
+
+          echo "BCM2835 SDHOST is built into the kernel."
 
       - name: Diagnose missing Diretta kernel symbols
         shell: bash
@@ -941,35 +969,70 @@ jobs:
           depmod -b "$PKG" "$KERNEL_RELEASE"
 
           # Build a module-only initramfs matching this exact kernel release.
-          # The original Eunhasu initramfs7 is an uncompressed newc CPIO
-          # containing usr/lib/modules/<release>/ and no /init userspace.
+          # modules_install uses CONFIG_MODULE_COMPRESS_XZ to create .ko.xz.
+          # The complete newc CPIO is then gzip-compressed for firmware loading.
           INITRD_ROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
+          INITRD_CPIO="$GITHUB_WORKSPACE/.work/initramfs7.cpio"
+
           rm -rf "$INITRD_ROOT"
           install -d "$INITRD_ROOT/usr/lib/modules"
+
           cp -a "$PKG/lib/modules/$KERNEL_RELEASE" \
             "$INITRD_ROOT/usr/lib/modules/"
+
+          MODULE_DIR="$PKG/lib/modules/$KERNEL_RELEASE"
+          XZ_MODULE_COUNT="$(find "$MODULE_DIR" -type f -name '*.ko.xz' | wc -l)"
+          PLAIN_MODULE_COUNT="$(find "$MODULE_DIR" -type f -name '*.ko' | wc -l)"
+
+          if [[ "$XZ_MODULE_COUNT" -eq 0 || "$PLAIN_MODULE_COUNT" -ne 0 ]]; then
+            echo "::error::Expected XZ-compressed modules only; .ko.xz=$XZ_MODULE_COUNT, plain .ko=$PLAIN_MODULE_COUNT"
+            exit 1
+          fi
+
+          echo "XZ-compressed kernel modules: $XZ_MODULE_COUNT"
 
           (
             cd "$INITRD_ROOT"
             find . -print0 | LC_ALL=C sort -z \
               | cpio --null --create --format=newc --owner=0:0
-          ) > "$PKG/boot/initramfs7"
+          ) > "$INITRD_CPIO"
 
+          test -s "$INITRD_CPIO"
+
+          # gzip -n removes timestamps and original filename for reproducibility.
+          gzip -9 -n -c "$INITRD_CPIO" > "$PKG/boot/initramfs7"
           test -s "$PKG/boot/initramfs7"
-          cpio -it < "$PKG/boot/initramfs7" \
+
+          # Validate the outer compression and the inner CPIO archive.
+          gzip -t "$PKG/boot/initramfs7"
+          gzip -dc "$PKG/boot/initramfs7" \
+            | cpio -it --quiet \
             > "$PKG/build-info/initramfs7.contents.txt"
+
           grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" \
             "$PKG/build-info/initramfs7.contents.txt"
 
-          if grep -Eq '(^|/)init$|6\\.18\\.34\\+rpt-rpi-v7' \
+          if grep -Eq '(^|/)init$|6\.18\.34\+rpt-rpi-v7' \
             "$PKG/build-info/initramfs7.contents.txt"; then
             echo "::error::Unexpected init or old-kernel module path in initramfs7."
             exit 1
           fi
 
-          file "$PKG/boot/initramfs7"
-          sha256sum "$PKG/boot/initramfs7" \
-            | tee "$PKG/build-info/initramfs7.sha256"
+          # Confirm the initramfs itself contains compressed modules.
+          grep -Eq "usr/lib/modules/$KERNEL_RELEASE/.+\.ko\.xz$" \
+            "$PKG/build-info/initramfs7.contents.txt"
+
+          echo
+          echo "===== Initramfs compression report ====="
+          file "$INITRD_CPIO" "$PKG/boot/initramfs7"
+          ls -lh "$INITRD_CPIO" "$PKG/boot/initramfs7"
+
+          (
+            cd "$PKG/boot"
+            sha256sum initramfs7
+          ) | tee "$PKG/build-info/initramfs7.sha256"
+
+          rm -f "$INITRD_CPIO"
 
           # Build information
 
@@ -1007,7 +1070,8 @@ jobs:
           boot/bcm2836-rpi-2-b.dtb
 
           Initramfs:
-          boot/initramfs7 (uncompressed newc CPIO, modules only)
+          boot/initramfs7 (gzip-compressed newc CPIO, modules only)
+          Kernel modules inside initramfs are XZ-compressed (.ko.xz).
 
           Kernel modules:
           lib/modules/$KERNEL_RELEASE/
