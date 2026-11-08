@@ -1,0 +1,462 @@
+name: Build Raspberry Pi 2 kernel for Diretta
+
+"on":
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: "Exact raspberrypi/linux commit verified to build Linux 6.2.15 (not the old 6.2.16 commit)"
+        required: true
+        type: string
+      jobs:
+        description: "Parallel build jobs (0 = automatically detect)"
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpi2-diretta-kernel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Linux 6.2.15 / Raspberry Pi 2 / Diretta ABI checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    env:
+      RPI_REPOSITORY: https://github.com/raspberrypi/linux.git
+      EXPECTED_KERNEL_VERSION: "6.2.15"
+      EXPECTED_KERNEL_RELEASE: "6.2.15-215.fc36.armv7hl"
+      EXPECTED_VERMAGIC: "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
+      CONFIG_FILE: config/rpi2.config
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install cross-build dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ca-certificates ccache \
+            flex gcc-12-arm-linux-gnueabihf git \
+            libelf-dev libssl-dev python3 rsync kmod dwarves \
+            device-tree-compiler file binutils-arm-linux-gnueabihf
+
+          mkdir -p "$GITHUB_WORKSPACE/.work/cross-bin"
+          CROSS_BIN="$GITHUB_WORKSPACE/.work/cross-bin"
+          for tool in ar as ld nm objcopy objdump ranlib readelf size strip; do
+            tool_path="$(command -v "arm-linux-gnueabihf-$tool")"
+            ln -sf "$tool_path" "$CROSS_BIN/arm-linux-gnueabihf-$tool"
+          done
+          gcc12="$(command -v arm-linux-gnueabihf-gcc-12)"
+          ln -sf "$gcc12" "$CROSS_BIN/arm-linux-gnueabihf-gcc"
+          echo "Pinned cross compiler: $gcc12"
+          "$gcc12" --version | head -n1
+
+      - name: Validate inputs and original Diretta modules
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -Eeuo pipefail
+
+          if [[ ! "$SOURCE_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "::error::source_commit must be a full 40-character Git commit SHA."
+            exit 1
+          fi
+
+          test -s "$CONFIG_FILE" || {
+            echo "::error::Missing $CONFIG_FILE"
+            exit 1
+          }
+
+          for module in \
+            modules/diretta/alsa_bridge.ko \
+            modules/diretta/diretta_direct.ko; do
+            test -s "$module" || {
+              echo "::error::Missing original module: $module"
+              exit 1
+            }
+
+            actual_vermagic="$(modinfo -F vermagic "$module" | xargs)"
+            [[ "$actual_vermagic" == "$EXPECTED_VERMAGIC" ]] || {
+              echo "::error::Unexpected original Diretta vermagic in $module"
+              echo "Expected: $EXPECTED_VERMAGIC"
+              echo "Actual:   $actual_vermagic"
+              exit 1
+            }
+
+            echo "===== $module ====="
+            file "$module"
+            readelf -h "$module" | grep -E 'Class:|Data:|Machine:|Flags:'
+            echo "name:      $(modinfo -F name "$module")"
+            echo "vermagic:  $actual_vermagic"
+            echo "depends:   $(modinfo -F depends "$module")"
+            echo "license:   $(modinfo -F license "$module")"
+            sha256sum "$module"
+          done
+
+          # Both modules must be 32-bit ARM EABI relocatable objects.
+          for module in modules/diretta/*.ko; do
+            readelf -h "$module" | grep -q 'Class:.*ELF32'
+            readelf -h "$module" | grep -q 'Machine:.*ARM'
+          done
+
+          mkdir -p .work/diretta
+          for module in modules/diretta/*.ko; do
+            arm-linux-gnueabihf-nm -u "$module" 2>/dev/null \
+              | awk '$1 == "U" {print $2}' \
+              | sort -u > ".work/diretta/$(basename "$module").undefined"
+          done
+
+          echo "SOURCE_COMMIT=$SOURCE_COMMIT" >> "$GITHUB_ENV"
+          sha256sum "$CONFIG_FILE" | tee .work/input-config.sha256
+
+      - name: Fetch and verify pinned Raspberry Pi source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          SRC="$GITHUB_WORKSPACE/.work/linux"
+          mkdir -p "$SRC"
+          git -C "$SRC" init
+          git -C "$SRC" remote add origin "$RPI_REPOSITORY"
+          git -C "$SRC" fetch --depth=1 origin "$SOURCE_COMMIT"
+          git -C "$SRC" checkout --detach FETCH_HEAD
+
+          actual_commit="$(git -C "$SRC" rev-parse HEAD)"
+          [[ "$actual_commit" == "$SOURCE_COMMIT" ]] || {
+            echo "::error::Fetched commit does not match requested commit."
+            exit 1
+          }
+
+          actual_version="$(make -s -C "$SRC" ARCH=arm kernelversion)"
+          [[ "$actual_version" == "$EXPECTED_KERNEL_VERSION" ]] || {
+            echo "::error::Wrong source version. Do not disguise 6.2.16 as 6.2.15."
+            echo "Expected source version: $EXPECTED_KERNEL_VERSION"
+            echo "Actual source version:   $actual_version"
+            exit 1
+          }
+
+          test -s "$SRC/arch/arm/configs/bcm2709_defconfig"
+          test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dts"
+          test -s "$SRC/scripts/config"
+          test -s "$SRC/scripts/Makefile.build"
+
+          {
+            echo "Repository: $RPI_REPOSITORY"
+            echo "Commit: $actual_commit"
+            echo "Kernel source version: $actual_version"
+            echo "Build host: $(uname -a)"
+            echo "Cross compiler: $(arm-linux-gnueabihf-gcc-12 --version | head -n1)"
+            echo "Expected kernel release: $EXPECTED_KERNEL_RELEASE"
+            echo "Expected original Diretta vermagic: $EXPECTED_VERMAGIC"
+          } | tee .work/source-info.txt
+
+      - name: Configure Raspberry Pi 2 and preserve Diretta ABI settings
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          SRC="$GITHUB_WORKSPACE/.work/linux"
+
+          # Apply the project's reviewed Raspberry Pi 2 configuration, then force the
+          # SOtM/Diretta ABI-sensitive and Pi 2 boot-critical settings.
+          if [[ -s "$CONFIG_FILE" ]]; then
+            cp "$CONFIG_FILE" "$SRC/.config"
+          fi
+
+          "$SRC/scripts/config" --file "$SRC/.config" \
+            --set-str LOCALVERSION "-215.fc36.armv7hl" \
+            --disable LOCALVERSION_AUTO \
+            --enable ARCH_MULTI_V7 \
+            --enable ARCH_BCM2835 \
+            --enable CPU_V7 \
+            --enable AEABI \
+            --enable SMP \
+            --enable PREEMPT \
+            --enable MODULES \
+            --enable MODULE_UNLOAD \
+            --enable FRAME_POINTER \
+            --disable MODVERSIONS \
+            --disable PREEMPT_RT \
+            --disable THUMB2_KERNEL \
+            --module SND \
+            --module SND_PCM \
+            --module SND_TIMER \
+            --module SND_SOC \
+            --module SND_USB_AUDIO \
+            --enable BLK_DEV_INITRD \
+            --enable DEVTMPFS \
+            --enable DEVTMPFS_MOUNT \
+            --enable MMC \
+            --enable MMC_BLOCK \
+            --enable MMC_BCM2835 \
+            --enable USB \
+            --enable USB_DWCOTG \
+            --enable SERIAL_AMBA_PL011 \
+            --enable SERIAL_AMBA_PL011_CONSOLE \
+            --enable EXT4_FS \
+            --module SQUASHFS \
+            --module OVERLAY_FS \
+            --module BLK_DEV_LOOP
+
+          make -C "$SRC" \
+            ARCH=arm \
+            CROSS_COMPILE="$GITHUB_WORKSPACE/.work/cross-bin/arm-linux-gnueabihf-" \
+            olddefconfig
+
+          check_config() {
+            local expected="$1"
+            grep -Fqx "$expected" "$SRC/.config" || {
+              echo "::error::Required config missing after olddefconfig: $expected"
+              exit 1
+            }
+          }
+
+          for item in \
+            CONFIG_ARCH_MULTI_V7=y \
+            CONFIG_ARCH_BCM2835=y \
+            CONFIG_CPU_V7=y \
+            CONFIG_AEABI=y \
+            CONFIG_SMP=y \
+            CONFIG_PREEMPT=y \
+            CONFIG_MODULES=y \
+            CONFIG_MODULE_UNLOAD=y \
+            CONFIG_FRAME_POINTER=y \
+            CONFIG_SND=m \
+            CONFIG_SND_PCM=m \
+            CONFIG_SND_TIMER=m \
+            CONFIG_SND_SOC=m \
+            CONFIG_SND_USB_AUDIO=m \
+            CONFIG_BLK_DEV_INITRD=y \
+            CONFIG_DEVTMPFS=y \
+            CONFIG_DEVTMPFS_MOUNT=y \
+            CONFIG_MMC=y \
+            CONFIG_MMC_BLOCK=y \
+            CONFIG_MMC_BCM2835=y \
+            CONFIG_USB_DWCOTG=y \
+            CONFIG_SERIAL_AMBA_PL011=y \
+            CONFIG_SERIAL_AMBA_PL011_CONSOLE=y \
+            CONFIG_EXT4_FS=y; do
+            check_config "$item"
+          done
+
+          for item in \
+            CONFIG_LOCALVERSION=\"-215.fc36.armv7hl\" \
+            "# CONFIG_LOCALVERSION_AUTO is not set"; do
+            check_config "$item"
+          done
+
+          if grep -Eq '^CONFIG_(MODVERSIONS|PREEMPT_RT|THUMB2_KERNEL)=y$' "$SRC/.config"; then
+            echo "::error::A Diretta-sensitive configuration option differs from the original baseline."
+            exit 1
+          fi
+
+          actual_release="$(make -s -C "$SRC" ARCH=arm CROSS_COMPILE="$GITHUB_WORKSPACE/.work/cross-bin/arm-linux-gnueabihf-" kernelrelease)"
+          [[ "$actual_release" == "$EXPECTED_KERNEL_RELEASE" ]] || {
+            echo "::error::kernelrelease mismatch; refusing to build."
+            echo "Expected: $EXPECTED_KERNEL_RELEASE"
+            echo "Actual:   $actual_release"
+            exit 1
+          }
+
+          echo "KERNEL_RELEASE=$actual_release" >> "$GITHUB_ENV"
+          cp "$SRC/.config" output-rpi2.config
+          echo "Verified kernelrelease: $actual_release"
+
+      - name: Build zImage, modules and device trees
+        shell: bash
+        env:
+          BUILD_JOBS: ${{ inputs.jobs }}
+        run: |
+          set -Eeuo pipefail
+
+          SRC="$GITHUB_WORKSPACE/.work/linux"
+          jobs="$BUILD_JOBS"
+          if [[ -z "$jobs" || "$jobs" == "0" ]]; then
+            jobs="$(nproc)"
+          fi
+          [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::Invalid build job count: $jobs"
+            exit 1
+          }
+
+          make -C "$SRC" \
+            ARCH=arm \
+            CROSS_COMPILE="$GITHUB_WORKSPACE/.work/cross-bin/arm-linux-gnueabihf-" \
+            -j"$jobs" \
+            zImage modules dtbs
+
+          test -s "$SRC/arch/arm/boot/zImage"
+          test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
+          test -s "$SRC/Module.symvers"
+          test -s "$SRC/System.map"
+
+      - name: Verify built kernel release and Diretta symbol coverage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          SRC="$GITHUB_WORKSPACE/.work/linux"
+          REPORT="$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
+
+          actual_release="$(make -s -C "$SRC" ARCH=arm CROSS_COMPILE="$GITHUB_WORKSPACE/.work/cross-bin/arm-linux-gnueabihf-" kernelrelease)"
+          [[ "$actual_release" == "$EXPECTED_KERNEL_RELEASE" ]]
+
+          # Verify that the kernel's generated module metadata carries the
+          # same vermagic string required by both original binary modules.
+          find "$SRC" -type f -name '*.ko' -print0 \
+            | while IFS= read -r -d '' ko; do
+                vm="$(modinfo -F vermagic "$ko" 2>/dev/null || true)"
+                if [[ -n "$vm" ]]; then
+                  [[ "$vm" == "$EXPECTED_VERMAGIC" ]] || {
+                    echo "::error::Built module vermagic mismatch: $ko"
+                    echo "Expected: $EXPECTED_VERMAGIC"
+                    echo "Actual:   $vm"
+                    exit 1
+                  }
+                  break
+                fi
+              done
+
+          missing_total=0
+          {
+            echo "Diretta static compatibility report"
+            echo "===================================="
+            echo "Target kernel release: $KERNEL_RELEASE"
+            echo "Source commit: $SOURCE_COMMIT"
+            echo "Required original vermagic: $EXPECTED_VERMAGIC"
+            echo
+            echo "NOTE: This report checks metadata and symbol exports only."
+            echo "It cannot prove private structure layout, semantic ABI, or runtime operation."
+            echo
+
+            for module in \
+              "$GITHUB_WORKSPACE/modules/diretta/alsa_bridge.ko" \
+              "$GITHUB_WORKSPACE/modules/diretta/diretta_direct.ko"; do
+              base="$(basename "$module")"
+              list="$GITHUB_WORKSPACE/.work/diretta/$base.undefined"
+              missing_file="$GITHUB_WORKSPACE/.work/diretta/$base.missing"
+
+              : > "$missing_file"
+              while IFS= read -r symbol; do
+                [[ -n "$symbol" ]] || continue
+                if ! awk -v s="$symbol" '$2 == s {found=1} END {exit !found}' "$SRC/Module.symvers"; then
+                  echo "$symbol" >> "$missing_file"
+                fi
+              done < "$list"
+
+              count="$(wc -l < "$missing_file")"
+              missing_total=$((missing_total + count))
+
+              echo "[$base]"
+              echo "Original vermagic: $(modinfo -F vermagic "$module" | xargs)"
+              echo "Original depends:  $(modinfo -F depends "$module")"
+              echo "Original license:  $(modinfo -F license "$module")"
+              echo "Undefined symbols: $(wc -l < "$list")"
+              echo "Symbols absent from target Module.symvers: $count"
+              if [[ "$count" -gt 0 ]]; then
+                sed 's/^/  MISSING: /' "$missing_file"
+              fi
+              echo
+            done
+
+            echo "Total missing imported symbols: $missing_total"
+            echo
+            echo "[ABI-sensitive target configuration]"
+            grep -E '^(CONFIG_(SMP|PREEMPT|PREEMPT_RT|MODULES|MODULE_UNLOAD|MODVERSIONS|AEABI|CPU_V7|THUMB2_KERNEL|FRAME_POINTER|SND|SND_PCM|SND_TIMER|SND_SOC|SND_USB_AUDIO|MMC|MMC_BLOCK|MMC_BCM2835|USB_DWCOTG))=|^# CONFIG_(MODVERSIONS|PREEMPT_RT|THUMB2_KERNEL) is not set$' "$SRC/.config" || true
+          } > "$REPORT"
+          cat "$REPORT"
+
+          if [[ "$missing_total" -ne 0 ]]; then
+            echo "::error::Diretta imports are missing from the target kernel exports. See compatibility report."
+            exit 1
+          fi
+
+      - name: Stage kernel, modules, DTB and build metadata
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          SRC="$GITHUB_WORKSPACE/.work/linux"
+          PKG="$GITHUB_WORKSPACE/package"
+
+          mkdir -p "$PKG/boot/overlays" "$PKG/build-info"
+
+          install -m 0644 "$SRC/arch/arm/boot/zImage" "$PKG/boot/kernel7.img"
+          install -m 0644 \
+            "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb" \
+            "$PKG/boot/bcm2836-rpi-2-b.dtb"
+
+          if compgen -G "$SRC/arch/arm/boot/dts/overlays/*.dtbo" > /dev/null; then
+            cp "$SRC"/arch/arm/boot/dts/overlays/*.dtbo "$PKG/boot/overlays/"
+          fi
+          if [[ -f "$SRC/arch/arm/boot/dts/overlays/README" ]]; then
+            cp "$SRC/arch/arm/boot/dts/overlays/README" "$PKG/boot/overlays/"
+          fi
+
+          make -C "$SRC" \
+            ARCH=arm \
+            CROSS_COMPILE="$GITHUB_WORKSPACE/.work/cross-bin/arm-linux-gnueabihf-" \
+            INSTALL_MOD_PATH="$PKG" \
+            modules_install
+
+          rm -f \
+            "$PKG/lib/modules/$KERNEL_RELEASE/build" \
+            "$PKG/lib/modules/$KERNEL_RELEASE/source"
+          depmod -b "$PKG" "$KERNEL_RELEASE"
+
+          install -m 0644 "$SRC/.config" "$PKG/build-info/rpi2.config"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          cp .work/source-info.txt "$PKG/build-info/"
+          cp .work/input-config.sha256 "$PKG/build-info/"
+          cp diretta-compatibility-report.txt "$PKG/build-info/"
+
+          cat > "$PKG/boot/config.txt.example" <<'EOF'
+          # Raspberry Pi 2 Model B (32-bit ARMv7)
+          arm_64bit=0
+          kernel=kernel7.img
+          device_tree=bcm2836-rpi-2-b.dtb
+          EOF
+
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2 Model B kernel package
+          Kernel version: $EXPECTED_KERNEL_VERSION
+          Kernel release: $KERNEL_RELEASE
+          Kernel image: boot/kernel7.img
+          Device tree: boot/bcm2836-rpi-2-b.dtb
+          Modules: lib/modules/$KERNEL_RELEASE/
+
+          This package does not include Raspberry Pi boot firmware or rootfs.
+          The original Diretta .ko files are deliberately not installed.
+          Read build-info/diretta-compatibility-report.txt before testing.
+          Static checks do not guarantee runtime ABI compatibility.
+          EOF
+
+          tar -czf "rpi2-kernel-${KERNEL_RELEASE}.tar.gz" -C "$GITHUB_WORKSPACE" package
+          sha256sum "rpi2-kernel-${KERNEL_RELEASE}.tar.gz" \
+            | tee "rpi2-kernel-${KERNEL_RELEASE}.tar.gz.sha256"
+
+      - name: Upload kernel package and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2-kernel-${{ env.KERNEL_RELEASE }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2-kernel-${{ env.KERNEL_RELEASE }}.tar.gz
+            rpi2-kernel-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
+            output-rpi2.config
+            diretta-compatibility-report.txt
+            package/README.txt
+            package/build-info/**
