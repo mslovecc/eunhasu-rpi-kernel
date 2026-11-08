@@ -389,6 +389,46 @@ jobs:
           make ARCH=arm \
             CROSS_COMPILE="$CROSS_COMPILE" \
             olddefconfig
+            
+            echo "========================================"
+            echo " LOCALVERSION DIAGNOSTICS"
+            echo "========================================"
+
+            echo
+            echo "[1] Expected kernel release:"
+            echo "$KERNEL_RELEASE"
+
+            echo
+            echo "[2] Derived LOCAL_SUFFIX:"
+            echo "LOCAL_SUFFIX=[$LOCAL_SUFFIX]"
+
+            echo
+            echo "[3] CONFIG_LOCALVERSION in .config:"
+            grep -n 'LOCALVERSION' .config || true
+
+            echo
+            echo "[4] Kernel Makefile version:"
+            grep -nE '^(VERSION|PATCHLEVEL|SUBLEVEL|EXTRAVERSION)[[:space:]]*=' Makefile
+
+            echo
+            echo "[5] Generated kernel.release:"
+            if [[ -f include/config/kernel.release ]]; then
+                cat include/config/kernel.release
+            else
+                echo "include/config/kernel.release does not exist"
+            fi
+
+            echo
+            echo "[6] Kernel release from Kbuild:"
+            make -s ARCH=arm \
+                CROSS_COMPILE="$CROSS_COMPILE" \
+                kernelrelease
+
+            echo
+            echo "========================================"
+            echo " END LOCALVERSION DIAGNOSTICS"
+            echo "========================================"
+
 
           ACTUAL_RELEASE="$(make -s ARCH=arm \
             CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
