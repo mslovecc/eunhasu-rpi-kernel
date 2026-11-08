@@ -182,7 +182,7 @@ jobs:
 
           mkdir -p .work/downloads
 
-          BASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          BASE_URL="https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15"
 
           curl -fL --retry 5 --retry-all-errors \
             "$BASE_URL/$SRPM_NAME" \
