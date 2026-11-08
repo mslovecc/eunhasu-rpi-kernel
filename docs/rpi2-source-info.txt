@@ -1,0 +1,5 @@
+Repository: https://github.com/raspberrypi/linux.git
+Requested branch: rpi-6.2.y
+Resolved commit: 4c7938b86db7dfccbfd4d2a840091cbb7fbf2e9f
+Commit date: 2023-05-24T14:30:25+01:00
+Kernel version: 6.2.16

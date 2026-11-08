@@ -1,0 +1,225 @@
+name: Generate Raspberry Pi 2 config
+
+"on":
+  workflow_dispatch:
+    inputs:
+      rpi_branch:
+        description: "Raspberry Pi Linux branch"
+        required: true
+        default: "rpi-6.2.y"
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - "config/eunhasu-a20.config"
+      - ".github/workflows/generate-rpi2-config.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: generate-rpi2-config-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  generate-config:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      RPI_REPOSITORY: https://github.com/raspberrypi/linux.git
+      RPI_BRANCH: ${{ inputs.rpi_branch || 'rpi-6.2.y' }}
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install host dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential flex libelf-dev libssl-dev python3 rsync
+
+      - name: Validate A20 baseline
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          A20_CONFIG="config/eunhasu-a20.config"
+          if [[ ! -s "$A20_CONFIG" ]]; then
+            echo "::error::Missing or empty $A20_CONFIG"
+            exit 1
+          fi
+          sha256sum "$A20_CONFIG"
+
+      - name: Clone Raspberry Pi Linux source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work
+          git clone --depth=1 --single-branch --branch "$RPI_BRANCH" \
+            "$RPI_REPOSITORY" .work/raspberrypi-linux
+
+          RPI_SRC="$GITHUB_WORKSPACE/.work/raspberrypi-linux"
+          test -f "$RPI_SRC/arch/arm/configs/bcm2709_defconfig"
+          test -f "$RPI_SRC/scripts/kconfig/merge_config.sh"
+          test -f "$RPI_SRC/scripts/diffconfig"
+          chmod +x "$RPI_SRC/scripts/kconfig/merge_config.sh" "$RPI_SRC/scripts/diffconfig"
+          test -x "$RPI_SRC/scripts/kconfig/merge_config.sh"
+          test -x "$RPI_SRC/scripts/diffconfig"
+
+          {
+            echo "Repository: $RPI_REPOSITORY"
+            echo "Requested branch: $RPI_BRANCH"
+            echo "Resolved commit: $(git -C "$RPI_SRC" rev-parse HEAD)"
+            echo "Commit date: $(git -C "$RPI_SRC" show -s --format=%cI HEAD)"
+            echo "Kernel version: $(make -s -C "$RPI_SRC" ARCH=arm kernelversion)"
+          } | tee .work/raspberrypi-source-info.txt
+
+      - name: Generate Raspberry Pi 2 base config
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RPI_SRC="$GITHUB_WORKSPACE/.work/raspberrypi-linux"
+          make -C "$RPI_SRC" ARCH=arm bcm2709_defconfig
+          cp "$RPI_SRC/.config" config/rpi2-reference.config
+
+      - name: Merge portable SOtM settings
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RPI_SRC="$GITHUB_WORKSPACE/.work/raspberrypi-linux"
+          A20_CONFIG="$GITHUB_WORKSPACE/config/eunhasu-a20.config"
+          A20_FRAGMENT="$GITHUB_WORKSPACE/config/rpi2-a20-preserved.fragment"
+
+          # Import only ABI-sensitive and ALSA-core settings from SOtM.
+          # The Raspberry Pi defconfig remains authoritative for hardware drivers.
+          python3 - "$A20_CONFIG" "$A20_FRAGMENT" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          source = Path(sys.argv[1])
+          destination = Path(sys.argv[2])
+
+          keep_exact = {
+              "PREEMPT",
+              "SMP",
+              "MODULES",
+              "MODULE_UNLOAD",
+              "MODVERSIONS",
+              "AEABI",
+              "CPU_V7",
+              "THUMB2_KERNEL",
+              "FRAME_POINTER",
+          }
+
+          kept = []
+          skipped = 0
+
+          for raw_line in source.read_text().splitlines():
+              line = raw_line.strip()
+              if line.startswith("CONFIG_"):
+                  name = line.split("=", 1)[0][7:]
+              else:
+                  match = re.match(r"# CONFIG_([A-Za-z0-9_]+) is not set$", line)
+                  if not match:
+                      continue
+                  name = match.group(1)
+
+              if name in keep_exact or name == "SND" or name.startswith("SND_"):
+                  kept.append(line)
+              else:
+                  skipped += 1
+
+          destination.parent.mkdir(parents=True, exist_ok=True)
+          destination.write_text("\n".join(kept) + "\n")
+          print(f"Preserved ABI/ALSA entries: {len(kept)}")
+          print(f"Ignored other A20 entries: {skipped}")
+          PY
+
+          test -s "$A20_FRAGMENT"
+          cd "$RPI_SRC"
+
+          ARCH=arm scripts/kconfig/merge_config.sh -m .config "$A20_FRAGMENT"
+          make ARCH=arm olddefconfig
+          cp .config "$GITHUB_WORKSPACE/config/rpi2.config"
+
+      - name: Validate and compare generated config
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          RPI_SRC="$GITHUB_WORKSPACE/.work/raspberrypi-linux"
+          CONFIG="config/rpi2.config"
+
+          test -s "$CONFIG"
+          grep -q '^CONFIG_ARCH_BCM2835=y$' "$CONFIG" || {
+            echo "::error::CONFIG_ARCH_BCM2835 is not enabled"
+            exit 1
+          }
+          grep -q '^CONFIG_ARCH_MULTI_V7=y$' "$CONFIG" || {
+            echo "::error::CONFIG_ARCH_MULTI_V7 is not enabled"
+            exit 1
+          }
+          grep -q '^CONFIG_MODULES=y$' "$CONFIG" || {
+            echo "::error::Kernel module support is not enabled"
+            exit 1
+          }
+
+          "$RPI_SRC/scripts/diffconfig" \
+            config/eunhasu-a20.config config/rpi2.config \
+            > config/rpi2-vs-a20.diff || true
+
+          {
+            echo "=== Raspberry Pi platform settings ==="
+            grep -E '^(CONFIG_ARCH_BCM2835|CONFIG_ARCH_MULTI_V7|CONFIG_ARCH_SUNXI|CONFIG_MACH_SUN7I)=' "$CONFIG" || true
+            echo
+            echo "=== Diretta-relevant settings ==="
+            grep -E '^(CONFIG_(SMP|PREEMPT|PREEMPT_RT|MODULES|MODVERSIONS|AEABI|CPU_V7|FRAME_POINTER|SND|SND_PCM|SND_TIMER|SND_SOC|SND_USB_AUDIO))=' "$CONFIG" || true
+            echo
+            echo "=== Generated config checksum ==="
+            sha256sum "$CONFIG"
+          } | tee config/rpi2-config-report.txt
+
+          cp .work/raspberrypi-source-info.txt docs/rpi2-source-info.txt
+
+      - name: Upload generated config and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2-config-${{ github.run_number }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            config/rpi2.config
+            config/rpi2-reference.config
+            config/rpi2-a20-preserved.fragment
+            config/rpi2-vs-a20.diff
+            config/rpi2-config-report.txt
+            docs/rpi2-source-info.txt
+
+      - name: Commit generated config to repository
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add \
+            config/rpi2.config \
+            config/rpi2-reference.config \
+            config/rpi2-a20-preserved.fragment \
+            config/rpi2-vs-a20.diff \
+            config/rpi2-config-report.txt \
+            docs/rpi2-source-info.txt
+
+          if git diff --cached --quiet; then
+            echo "Generated files are unchanged; no commit is needed."
+            exit 0
+          fi
+
+          git commit -m "Generate Raspberry Pi 2 kernel config"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
