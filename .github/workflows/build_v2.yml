@@ -277,13 +277,19 @@ jobs:
           echo "Linux source version: $VERSION"
 
       # --------------------------------------------------
-      # 7. Apply Fedora patch
+      # 7. Apply Fedora patch and restore Makefile.rhelver
       # --------------------------------------------------
 
       - name: Apply Fedora kernel patch
         shell: bash
         run: |
           set -Eeuo pipefail
+
+          echo "========================================"
+          echo " APPLY FEDORA KERNEL PATCH"
+          echo "========================================"
+
+          # Apply Fedora patch.
 
           patch \
             --directory="$SRC" \
@@ -293,6 +299,51 @@ jobs:
 
           echo "Fedora patch applied."
 
+          # Locate Makefile.rhelver from extracted SRPM.
+
+          RHELVER_FILE="$(
+            find .work/srpm-payload \
+              -type f \
+              -name Makefile.rhelver \
+              -print \
+              -quit
+          )"
+
+          if [[ -z "$RHELVER_FILE" || ! -s "$RHELVER_FILE" ]]; then
+            echo "::error::Makefile.rhelver missing from Fedora SRPM payload."
+            exit 1
+          fi
+
+          # Restore the Fedora-specific Makefile include.
+
+          install -m 0644 \
+            "$RHELVER_FILE" \
+            "$SRC/Makefile.rhelver"
+
+          # Verify the file.
+
+          test -s "$SRC/Makefile.rhelver"
+
+          echo
+          echo "[Makefile.rhelver]"
+
+          ls -l "$SRC/Makefile.rhelver"
+
+          sha256sum \
+            "$RHELVER_FILE" \
+            "$SRC/Makefile.rhelver"
+
+          cmp \
+            "$RHELVER_FILE" \
+            "$SRC/Makefile.rhelver"
+
+          # Verify top-level Makefile references it.
+
+          grep -n 'Makefile.rhelver' "$SRC/Makefile"
+
+          echo
+          echo "Fedora Makefile preparation passed."
+          
       # --------------------------------------------------
       # 8. Configure Raspberry Pi 2
       # --------------------------------------------------
