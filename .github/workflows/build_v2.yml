@@ -267,55 +267,57 @@ jobs:
           echo "Fedora patch applied."
 
 
+
       - name: Restore Fedora Makefile.rhelver
         shell: bash
         run: |
           set -Eeuo pipefail
 
-          SRPM="$GITHUB_WORKSPACE/${{ env.SUPPORT_DIR }}/${{ env.SRPM_NAME }}"
+          SUPPORT="$GITHUB_WORKSPACE/$SUPPORT_DIR"
           SRC="$SRC"
 
-          test -f "$SRPM"
+          echo "===== 1. Verify source files ====="
+
+          test -d "$SUPPORT"
           test -d "$SRC"
+          test -f "$SUPPORT/Makefile.rhelver"
+          test -f "$SRC/Makefile"
 
-          echo "===== Extract Makefile.rhelver from Fedora SRPM ====="
+          echo "Support file:"
+          ls -lh "$SUPPORT/Makefile.rhelver"
 
-          RPM_PAYLOAD="$RUNNER_TEMP/fedora-srpm-payload"
-          mkdir -p "$RPM_PAYLOAD"
+          echo
+          echo "===== 2. Verify repository manifest ====="
 
-          (
-            cd "$RPM_PAYLOAD"
-            rpm2cpio "$SRPM" | cpio -idm --quiet
-          )
-
-          RHELVER_FILE="$(
-            find "$RPM_PAYLOAD" \
-              -type f \
-              -name Makefile.rhelver \
-              -print -quit
-          )"
-
-          if [[ -z "$RHELVER_FILE" ]]; then
-            echo "::error::Makefile.rhelver not found in Fedora SRPM."
-            echo "SRPM payload files:"
-            find "$RPM_PAYLOAD" -maxdepth 4 -type f | head -100
-            exit 1
+          if [[ -f "$SUPPORT/SHA256SUMS" ]]; then
+            (
+              cd "$SUPPORT"
+              sha256sum -c SHA256SUMS
+            )
+          else
+            echo "::warning::SHA256SUMS not found; skipping manifest verification."
           fi
 
-          install -m 0644 "$RHELVER_FILE" "$SRC/Makefile.rhelver"
+          echo
+          echo "===== 3. Install Makefile.rhelver ====="
 
-          echo "===== Verify restored file ====="
-          ls -l "$SRC/Makefile.rhelver"
+          install -m 0644 \
+            "$SUPPORT/Makefile.rhelver" \
+            "$SRC/Makefile.rhelver"
+
+          echo
+          echo "===== 4. Verify installation ====="
+
+          cmp \
+            "$SUPPORT/Makefile.rhelver" \
+            "$SRC/Makefile.rhelver"
+
+          ls -lh "$SRC/Makefile.rhelver"
           sha256sum "$SRC/Makefile.rhelver"
 
-          if ! grep -q 'Makefile.rhelver' "$SRC/Makefile"; then
-            echo "::error::Kernel Makefile does not reference Makefile.rhelver."
-            exit 1
-          fi
+          grep -n 'Makefile.rhelver' "$SRC/Makefile"
 
           echo "Makefile.rhelver restored successfully."
-
-
 
       # --------------------------------------------------
       # 8. Configure Raspberry Pi 2
