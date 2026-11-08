@@ -1,0 +1,47 @@
+Module                  Size  Used by
+binfmt_misc            24576  1
+alsa_bridge            20480  0
+diretta_direct         86016  2
+cfg80211              679936  0
+rfkill                 24576  2 cfg80211
+snd_usb_audio         241664  1
+snd_hwdep              16384  1 snd_usb_audio
+snd_usbmidi_lib        32768  1 snd_usb_audio
+snd_rawmidi            32768  1 snd_usbmidi_lib
+dwmac_sunxi            16384  0
+snd_seq                61440  0
+stmmac_platform        24576  1 dwmac_sunxi
+stmmac                196608  3 stmmac_platform,dwmac_sunxi
+pcs_xpcs               20480  1 stmmac
+phylink                45056  2 pcs_xpcs,stmmac
+snd_seq_device         16384  2 snd_seq,snd_rawmidi
+snd_pcm                94208  2 alsa_bridge,snd_usb_audio
+of_mdio                20480  2 stmmac,stmmac_platform
+fixed_phy              16384  1 of_mdio
+fwnode_mdio            20480  1 of_mdio
+axp20x_adc             16384  0
+axp20x_pek             16384  0
+snd_timer              32768  2 snd_seq,snd_pcm
+libphy                 81920  7 of_mdio,pcs_xpcs,stmmac,phylink,fwnode_mdio,fixed_phy
+snd                    69632  11 alsa_bridge,snd_hwdep,snd_seq,snd_usb_audio,snd_timer,snd_rawmidi,snd_usbmidi_lib,snd_seq_device,snd_pcm
+nvmem_sunxi_sid        16384  0
+bfq                    69632  1
+leds_gpio              16384  0
+fuse                  114688  1
+pinctrl_axp209         16384  0
+axp20x_regulator       40960  1
+axp20x_ac_power        16384  0
+mmc_block              40960  4
+des_generic            16384  0
+ahci_sunxi             16384  0
+sun4i_ss               32768  0
+libahci_platform       20480  1 ahci_sunxi
+i2c_mv64xxx            20480  0
+rtc_sunxi              16384  0
+sunxi_wdt              16384  0
+libahci                32768  2 ahci_sunxi,libahci_platform
+libdes                 28672  2 sun4i_ss,des_generic
+sunxi_mmc              28672  0
+phy_sun4i_usb          28672  4
+ehci_platform          20480  0
+ohci_platform          16384  0

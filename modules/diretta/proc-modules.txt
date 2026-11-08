@@ -1,0 +1,46 @@
+binfmt_misc 24576 1 - Live 0xbf29d000
+alsa_bridge 20480 0 - Live 0xbf297000 (OE)
+diretta_direct 86016 2 - Live 0xbf281000 (OE)
+cfg80211 679936 0 - Live 0xbf1da000
+rfkill 24576 2 cfg80211, Live 0xbf1d3000
+snd_usb_audio 241664 1 - Live 0xbf197000 (OE)
+snd_hwdep 16384 1 snd_usb_audio, Live 0xbf192000
+snd_usbmidi_lib 32768 1 snd_usb_audio, Live 0xbf189000
+snd_rawmidi 32768 1 snd_usbmidi_lib, Live 0xbf17b000
+dwmac_sunxi 16384 0 - Live 0xbf184000
+snd_seq 61440 0 - Live 0xbf16b000
+stmmac_platform 24576 1 dwmac_sunxi, Live 0xbf164000
+stmmac 196608 3 dwmac_sunxi,stmmac_platform, Live 0xbf133000
+pcs_xpcs 20480 1 stmmac, Live 0xbf12d000
+phylink 45056 2 stmmac,pcs_xpcs,[permanent], Live 0xbf121000
+snd_seq_device 16384 2 snd_rawmidi,snd_seq, Live 0xbf11c000
+snd_pcm 94208 2 alsa_bridge,snd_usb_audio, Live 0xbf104000
+of_mdio 20480 2 stmmac_platform,stmmac, Live 0xbf0fe000
+fixed_phy 16384 1 of_mdio, Live 0xbf0f9000
+fwnode_mdio 20480 1 of_mdio, Live 0xbf0f3000
+axp20x_adc 16384 0 - Live 0xbf07c000
+axp20x_pek 16384 0 - Live 0xbf054000
+snd_timer 32768 2 snd_seq,snd_pcm, Live 0xbf0d3000
+libphy 81920 7 stmmac,pcs_xpcs,phylink,of_mdio,fixed_phy,fwnode_mdio, Live 0xbf0de000
+snd 69632 11 alsa_bridge,snd_usb_audio,snd_hwdep,snd_usbmidi_lib,snd_rawmidi,snd_seq,snd_seq_device,snd_pcm,snd_timer, Live 0xbf0c1000
+nvmem_sunxi_sid 16384 0 - Live 0xbf02b000
+bfq 69632 1 - Live 0xbf0af000
+leds_gpio 16384 0 - Live 0xbf005000
+fuse 114688 1 - Live 0xbf092000
+pinctrl_axp209 16384 0 - Live 0xbf046000
+axp20x_regulator 40960 1 - Live 0xbf082000
+axp20x_ac_power 16384 0 - Live 0xbf08d000
+mmc_block 40960 4 - Live 0xbf071000
+des_generic 16384 0 - Live 0xbf041000
+ahci_sunxi 16384 0 - Live 0xbf01e000
+sun4i_ss 32768 0 - Live 0xbf038000
+libahci_platform 20480 1 ahci_sunxi, Live 0xbf010000
+i2c_mv64xxx 20480 0 - Live 0xbf06b000
+rtc_sunxi 16384 0 - Live 0xbf059000
+sunxi_wdt 16384 0 - Live 0xbf062000
+libahci 32768 2 ahci_sunxi,libahci_platform, Live 0xbf04b000
+libdes 28672 2 des_generic,sun4i_ss, Live 0xbf030000
+sunxi_mmc 28672 0 - Live 0xbf023000
+phy_sun4i_usb 28672 4 - Live 0xbf016000
+ehci_platform 20480 0 - Live 0xbf00a000
+ohci_platform 16384 0 - Live 0xbf000000

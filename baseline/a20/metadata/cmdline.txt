@@ -1,0 +1,1 @@
+ro root=UUID=7c321d6b-f2b0-4783-9576-e3dfe657f9b3 LANG=en_US.UTF-8 audit=0 selinux=0

@@ -1,0 +1,38 @@
+Name        : kernel-core
+Version     : 6.1.60
+Release     : 213.fc32
+Architecture: armv7hl
+Install Date: Tue 18 Jun 2024 07:59:53 AM CEST
+Group       : Unspecified
+Size        : 55872584
+License     : GPLv2 and Redistributable, no modification permitted
+Signature   : (none)
+Source RPM  : kernel-6.1.60-213.fc32.src.rpm
+Build Date  : Tue 26 Mar 2024 07:24:24 PM CET
+Build Host  : eunhasu
+URL         : https://www.kernel.org/
+Summary     : The Linux kernel
+Description :
+The kernel package contains the Linux kernel (vmlinuz), the core of any
+Linux operating system.  The kernel handles the basic functions
+of the operating system: memory allocation, process allocation, device
+input and output, etc.
+Name        : kernel-core
+Version     : 6.2.15
+Release     : 215.fc36
+Architecture: armv7hl
+Install Date: Thu 10 Dec 2020 01:27:04 AM CET
+Group       : Unspecified
+Size        : 48563106
+License     : GPLv2 and Redistributable, no modification permitted
+Signature   : (none)
+Source RPM  : kernel-6.2.15-215.fc36.src.rpm
+Build Date  : Fri 13 Dec 2024 03:25:49 AM CET
+Build Host  : eunhasu
+URL         : https://www.kernel.org/
+Summary     : The Linux kernel
+Description :
+The kernel package contains the Linux kernel (vmlinuz), the core of any
+Linux operating system.  The kernel handles the basic functions
+of the operating system: memory allocation, process allocation, device
+input and output, etc.

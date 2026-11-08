@@ -1,0 +1,13 @@
+kernel-srpm-macros-1.0-14.fc36.noarch
+kernel-6.1.60-213.fc32.armv7hl
+kernel-tools-libs-6.2.15-215.fc36.armv7hl
+kernel-modules-6.1.60-213.fc32.armv7hl
+kernel-modules-core-6.2.15-215.fc36.armv7hl
+kernel-core-6.1.60-213.fc32.armv7hl
+kernel-modules-extra-6.1.60-213.fc32.armv7hl
+kernel-headers-6.2.15-215.fc36.armv7hl
+kernel-tools-6.2.15-215.fc36.armv7hl
+kernel-6.2.15-215.fc36.armv7hl
+kernel-core-6.2.15-215.fc36.armv7hl
+kernel-modules-extra-6.2.15-215.fc36.armv7hl
+kernel-modules-6.2.15-215.fc36.armv7hl

@@ -1,0 +1,1 @@
+Linux eunhasu 6.2.15-215.fc36.armv7hl #1 SMP PREEMPT Thu Dec 12 22:17:03 PST 2024 armv7l armv7l armv7l GNU/Linux
