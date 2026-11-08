@@ -1,0 +1,18 @@
+=== Raspberry Pi platform settings ===
+CONFIG_ARCH_MULTI_V7=y
+CONFIG_ARCH_BCM2835=y
+
+=== Diretta-relevant settings ===
+CONFIG_PREEMPT=y
+CONFIG_CPU_V7=y
+CONFIG_SMP=y
+CONFIG_AEABI=y
+CONFIG_MODULES=y
+CONFIG_SND=m
+CONFIG_SND_TIMER=m
+CONFIG_SND_PCM=m
+CONFIG_SND_USB_AUDIO=m
+CONFIG_SND_SOC=m
+
+=== Generated config checksum ===
+2d65def4c0756fa9e1877512c4f2d75c705d8ea9c844e891bb5059365d8fff71  config/rpi2.config
