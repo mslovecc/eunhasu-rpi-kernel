@@ -227,9 +227,20 @@ keep = {
     # BCM2835/BCM2836/BCM2837 platform and VideoCore
     "ARCH_BCM2835", "ARCH_BCM", "ARCH_MULTI_V7", "ARCH_MULTIPLATFORM",
     "BCM2835_MBOX", "BCM2835_POWER", "BCM2835_THERMAL", "BCM2835_WDT",
-    "BCM2835_VCHIQ", "VCHIQ", "BCM2835_DMA", "BCM2835_RNG",
+    "BCM2835_VCHIQ", "BCM2835_VCHIQ_MMAL", "VCHIQ",
+    "BCM2835_DMA", "BCM2835_RNG", "HW_RANDOM_BCM2835",
+    "BCM2835_TIMER", "CLK_BCM2835", "CLK_RASPBERRYPI",
+    "RASPBERRYPI_FIRMWARE", "RASPBERRYPI_POWER",
+    "GPIO_RASPBERRYPI_EXP", "SENSORS_RASPBERRYPI_HWMON",
+    "REGULATOR_RASPBERRYPI_TOUCHSCREEN_ATTINY",
+    "TOUCHSCREEN_RASPBERRYPI_FW", "DRM_PANEL_RASPBERRYPI_TOUCHSCREEN",
+    "PWM_RASPBERRYPI_POE", "PWM_BCM2835", "VIDEO_BCM2835",
     "DRM", "DRM_KMS_HELPER", "DRM_GEM_SHMEM_HELPER", "DRM_VC4",
     "DRM_DISPLAY_HELPER", "DRM_PANEL", "DRM_BRIDGE",
+    "MEDIA_SUPPORT", "MEDIA_CAMERA_SUPPORT", "MEDIA_CONTROLLER",
+    "MEDIA_PLATFORM_SUPPORT", "VIDEO_DEV", "VIDEO_V4L2",
+    "VIDEOBUF2_CORE", "VIDEOBUF2_V4L2", "VIDEOBUF2_MEMOPS",
+    "VIDEOBUF2_VMALLOC", "MEDIA_CONTROLLER_REQUEST_API",
     # SD/MMC, USB host/storage and Pi 2/3 USB Ethernet
     "MMC", "MMC_BLOCK", "MMC_BCM2835", "MMC_SDHCI", "MMC_SDHCI_PLTFM",
     "USB", "USB_COMMON", "USB_SUPPORT", "USB_DWC2", "USB_DWCOTG",
@@ -269,7 +280,13 @@ def prune(rel, sym):
     # No camera capture, TV tuner, DVB, radio or PCI media hardware in this
     # headless audio-player profile.
     if rel.startswith("drivers/media/"):
-        return True
+        return sym not in {
+            "MEDIA_SUPPORT", "MEDIA_CAMERA_SUPPORT", "MEDIA_CONTROLLER",
+            "MEDIA_PLATFORM_SUPPORT", "VIDEO_DEV", "VIDEO_V4L2",
+            "VIDEO_BCM2835", "VIDEOBUF2_CORE", "VIDEOBUF2_V4L2",
+            "VIDEOBUF2_MEMOPS", "VIDEOBUF2_VMALLOC",
+            "MEDIA_CONTROLLER_REQUEST_API",
+        }
 
     # Pi 2/3 Ethernet is attached through the USB hub: SMSC95xx on Pi 2,
     # LAN78xx on Pi 3. There is no onboard PCI/SoC Ethernet MAC.
@@ -316,10 +333,22 @@ def prune(rel, sym):
         return True
 
     # Non-essential peripheral classes that account for many modules.
-    if rel.startswith(("drivers/iio/", "drivers/hwmon/", "drivers/w1/",
-                       "drivers/input/joystick/", "drivers/input/touchscreen/",
-                       "drivers/input/misc/")):
+    if rel.startswith(("drivers/iio/", "drivers/w1/",
+                       "drivers/input/joystick/", "drivers/input/misc/")):
         return True
+    if rel.startswith("drivers/hwmon/"):
+        return sym != "SENSORS_RASPBERRYPI_HWMON"
+    if rel.startswith("drivers/input/touchscreen/"):
+        return sym != "TOUCHSCREEN_RASPBERRYPI_FW"
+    if rel.startswith("drivers/rtc/"):
+        return sym not in {
+            "RTC_CLASS", "RTC_HCTOSYS", "RTC_HCTOSYS_DEVICE", "RTC_SYSTOHC",
+            "RTC_NVMEM", "RTC_INTF_SYSFS", "RTC_INTF_PROC", "RTC_INTF_DEV",
+        }
+    if rel.startswith("drivers/hid/"):
+        if rel == "drivers/hid/Kconfig":
+            return False
+        return not rel.startswith("drivers/hid/usbhid/")
 
     # Do not build other SoC audio codec/CPU-DAI drivers or PCI/ISA sound cards.
     if rel.startswith("sound/soc/"):
