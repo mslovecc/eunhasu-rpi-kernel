@@ -248,7 +248,9 @@ jobs:
             --module SND_PCM \
             --module SND_TIMER \
             --module SND_USB_AUDIO \
-            --module SND_SOC
+            --module SND_SOC \
+            --enable MODULE_COMPRESS \
+            --enable MODULE_COMPRESS_XZ
 
           # Explicitly disable PC/server GPU drivers and optional network protocols.
           for sym in \
@@ -283,7 +285,8 @@ jobs:
             CONFIG_BLK_DEV_INITRD=y CONFIG_RD_GZIP=y \
             CONFIG_DEVTMPFS=y CONFIG_DEVTMPFS_MOUNT=y \
             CONFIG_MMC=y CONFIG_MMC_BLOCK=y CONFIG_USB=y \
-            CONFIG_SERIAL_AMBA_PL011=y CONFIG_SERIAL_AMBA_PL011_CONSOLE=y; do
+            CONFIG_SERIAL_AMBA_PL011=y CONFIG_SERIAL_AMBA_PL011_CONSOLE=y \
+            CONFIG_MODULE_COMPRESS=y CONFIG_MODULE_COMPRESS_XZ=y; do
             require_config "$setting"
           done
 
