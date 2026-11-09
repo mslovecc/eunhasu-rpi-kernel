@@ -186,7 +186,7 @@ jobs:
             echo "SRPM: $SRPM_NAME"
             echo
             echo "[Required resolved config]"
-            grep -E '^(CONFIG_(LOCALVERSION|SMP|PREEMPT|MODULES|MODULE_UNLOAD|HARDENED_USERCOPY|FORTIFY_SOURCE)=|# CONFIG_(MODVERSIONS|MODULE_SIG|MODULE_SIG_FORCE|MODULE_SIG_ALL) is not set)' .config || true
+            grep -E '^(CONFIG_(LOCALVERSION|SMP|PREEMPT|MODULES|MODULE_UNLOAD|HIGHMEM|HARDENED_USERCOPY|FORTIFY_SOURCE)=|# CONFIG_(MODVERSIONS|MODULE_SIG|MODULE_SIG_FORCE|MODULE_SIG_ALL) is not set)' .config || true
             echo
             echo "[Requested overlay options not retained by Kconfig - advisory]"
             python3 - "$GITHUB_WORKSPACE/$DIRETTA_FRAGMENT" .config <<'PY'
@@ -214,6 +214,9 @@ jobs:
           grep -qx 'CONFIG_PREEMPT=y' .config
           grep -qx 'CONFIG_MODULES=y' .config
           grep -qx 'CONFIG_MODULE_UNLOAD=y' .config
+          # alsa_bridge imports page_address(); ARM only provides the exported
+          # page-address implementation when HIGHMEM support is selected.
+          grep -qx 'CONFIG_HIGHMEM=y' .config
           grep -qx '# CONFIG_MODVERSIONS is not set' .config
           # MODULE_SIG_FORCE is not a guaranteed Kconfig symbol in this
           # Raspberry Pi kernel tree. Do not make its textual presence a gate:
@@ -271,6 +274,15 @@ jobs:
             echo "::error::Built module vermagic does not match the supplied Diretta modules."
             exit 1
           }
+
+          # These three symbols are explicit ABI requirements of the supplied
+          # Diretta modules. They are not optional audit findings.
+          for sym in __check_object_size fortify_panic page_address; do
+            if ! awk -v s="$sym" '$2==s && $1=="0x00000000" && $4=="EXPORT_SYMBOL" {found=1} END{exit !found}' "$SRC/Module.symvers"; then
+              echo "::error::Required Diretta kernel export missing or mismatched: $sym"
+              exit 1
+            fi
+          done
 
           # Collect only symbols that the peer module marks as exported.
           for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
@@ -355,13 +367,16 @@ jobs:
           install -m 0644 modules/diretta/alsa_bridge.ko "$MODDIR/extra/diretta/"
           install -m 0644 modules/diretta/diretta_direct.ko "$MODDIR/extra/diretta/"
           depmod -b "$PKG" "$KERNEL_RELEASE"
+          test -d "$MODDIR"
+          [[ "$(basename "$MODDIR")" == "$KERNEL_RELEASE" ]]
+          test -s "$MODDIR/modules.dep"
 
           # Build a generic initramfs from the ARM target module tree, not
           # from the x86_64 GitHub runner's currently running kernel.
           # --no-hostonly prevents host hardware from contaminating the image.
           dracut --force --no-hostonly --no-hostonly-cmdline \
             --kver "$KERNEL_RELEASE" \
-            --kmoddir "$PKG/lib/modules" \
+            --kmoddir "$MODDIR" \
             --omit "ply plymouth" \
             "$PKG/boot/initramfs7" "$KERNEL_RELEASE"
           test -s "$PKG/boot/initramfs7"
