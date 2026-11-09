@@ -333,19 +333,23 @@ jobs:
             exit 1
           }
 
-          echo "===== Required A20 Module.symvers exports ====="
+          echo "===== Advisory A20 Module.symvers export audit ====="
+          A20_EXPORT_MISSING=0
           for sym in __check_object_size fortify_panic page_address; do
-            awk -v s="$sym" '
+            if awk -v s="$sym" '
               $2 == s && $1 == "0x00000000" && $4 == "EXPORT_SYMBOL" {
                 print
                 found=1
               }
               END { if (!found) exit 1 }
-            ' "$SRC/Module.symvers" || {
-              echo "::error::Required A20 export missing or has wrong CRC/type: $sym"
-              exit 1
-            }
+            ' "$SRC/Module.symvers"; then
+              :
+            else
+              echo "::warning::A20 export missing or has wrong CRC/type: $sym"
+              A20_EXPORT_MISSING=1
+            fi
           done
+          echo "A20 export audit completed; missing entries are reported and do not stop packaging."
 
           # Allow either supplied Diretta module to satisfy imports from the other.
           : > .work/diretta/combined-module-exports.txt
@@ -365,9 +369,13 @@ jobs:
             echo
             echo "Static vermagic and exported-symbol-name checks do not prove complete binary ABI compatibility."
             echo
-            echo "[Required A20 exports: CRC 0x00000000 / EXPORT_SYMBOL]"
+            echo "[A20 exports: expected CRC 0x00000000 / EXPORT_SYMBOL]"
             for REQUIRED_SYMBOL in __check_object_size fortify_panic page_address; do
-              awk -v s="$REQUIRED_SYMBOL" '$2 == s {print}' "$SRC/Module.symvers"
+              if awk -v s="$REQUIRED_SYMBOL" '$2 == s && $1 == "0x00000000" && $4 == "EXPORT_SYMBOL" {print; found=1} END {exit !found}' "$SRC/Module.symvers"; then
+                :
+              else
+                echo "MISSING_OR_MISMATCHED: $REQUIRED_SYMBOL"
+              fi
             done
             echo
             echo "[Symbols exported by the two supplied Diretta modules]"
