@@ -65,6 +65,7 @@ jobs:
           for f in \
             "$SUPPORT_DIR/kernel.spec" \
             "$SUPPORT_DIR/patch-6.2-redhat.patch" \
+            "$SUPPORT_DIR/kernel-armv7hl-fedora.config" \
             "$SUPPORT_DIR/SHA256SUMS" \
             "$ABI_FRAGMENT" \
             modules/diretta/alsa_bridge.ko \
@@ -161,10 +162,12 @@ jobs:
 
           SPEC="$(find .work/srpm-payload -name kernel.spec -type f -print -quit)"
           PATCH="$(find .work/srpm-payload -name patch-6.2-redhat.patch -type f -print -quit)"
-          test -n "$SPEC" && test -n "$PATCH"
+          CONFIG="$(find .work/srpm-payload -name kernel-armv7hl-fedora.config -type f -print -quit)"
+          test -n "$SPEC" && test -n "$PATCH" && test -n "$CONFIG"
           cmp "$SPEC" "$SUPPORT_DIR/kernel.spec"
           cmp "$PATCH" "$SUPPORT_DIR/patch-6.2-redhat.patch"
-          echo "SRPM payload matches the checked-in support files."
+          cmp "$CONFIG" "$SUPPORT_DIR/kernel-armv7hl-fedora.config"
+          echo "SRPM payload and Fedora base config match the checked-in support files."
 
       - name: Extract Linux 6.2.15 source
         shell: bash
@@ -243,10 +246,15 @@ jobs:
           "${CROSS_COMPILE}gcc" -dM -E -x c /dev/null \
             | grep -E '__ARM_ARCH|__ARM_ARCH_ISA|__thumb__|__thumb2__' || true
           echo
-          echo "===== Required symbol definitions ====="
-          for sym in __check_object_size fortify_panic page_address; do
-            grep -w "$sym" Module.symvers || echo "NOT FOUND: $sym (will be checked after build)"
-          done
+          echo "===== Source implementations and export declarations ====="
+          grep -R -n -E \
+            '(__check_object_size|fortify_panic|page_address)' \
+            mm lib include --include='*.c' --include='*.h' || true
+          echo
+          grep -R -n -E \
+            'EXPORT_SYMBOL(_GPL)?\((__check_object_size|fortify_panic|page_address)\)' \
+            mm lib --include='*.c' || true
+          echo "Final export records are checked in Module.symvers after the build."
 
       - name: Build zImage modules and device trees
         shell: bash
