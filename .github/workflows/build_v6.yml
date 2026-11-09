@@ -84,6 +84,7 @@ jobs:
             echo "::error::Supplied Diretta vermagic differs from the explicitly requested ABI: $ALSA_VERMAGIC"
             exit 1
           }
+          echo "EXPECTED_VERMAGIC=$ALSA_VERMAGIC" >> "$GITHUB_ENV"
           for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
             readelf -h "$module" | grep -q 'Class:.*ELF32'
             readelf -h "$module" | grep -q 'Machine:.*ARM'
@@ -268,6 +269,19 @@ jobs:
             exit 1
           }
 
+          # Collect only symbols that the peer module marks as exported.
+          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            name="$(basename "$module")"
+            peer="modules/diretta/diretta_direct.ko"
+            [[ "$name" == "diretta_direct.ko" ]] && peer="modules/diretta/alsa_bridge.ko"
+            arm-linux-gnueabihf-nm -a "$peer" 2>/dev/null \
+              | awk '{
+                  s=$NF
+                  if (s ~ /^__ksymtab_/) { sub(/^__ksymtab_/, "", s); print s }
+                  else if (s ~ /^___ksymtab\\+/) { sub(/^___ksymtab\\+/, "", s); print s }
+                }' | sort -u > ".work/diretta/$name.peer-exports"
+          done
+
           REPORT="$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
           MISSING_TOTAL=0
           {
@@ -293,13 +307,15 @@ jobs:
               : > "$missing"
               while IFS= read -r sym; do
                 [[ -n "$sym" ]] || continue
-                if ! awk -v s="$sym" '$2==s {found=1} END{exit !found}' "$SRC/Module.symvers"; then
+                if ! awk -v s="$sym" '$2==s {found=1} END{exit !found}' "$SRC/Module.symvers" \
+                    && ! grep -Fxq "$sym" ".work/diretta/$name.peer-exports"; then
                   echo "$sym" >> "$missing"
                 fi
               done < ".work/diretta/$name.undefined"
               count="$(wc -l < "$missing")"
               MISSING_TOTAL=$((MISSING_TOTAL + count))
-              echo "$name: undefined=$(wc -l < ".work/diretta/$name.undefined"), not in kernel Module.symvers=$count"
+              echo "$name: undefined=$(wc -l < ".work/diretta/$name.undefined"), not in kernel or peer exports=$count"
+              echo "Peer module exported-symbol candidates: $(wc -l < ".work/diretta/$name.peer-exports")"
               if [[ "$count" -gt 0 ]]; then sed 's/^/  MISSING: /' "$missing"; fi
             done
             echo
