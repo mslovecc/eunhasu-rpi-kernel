@@ -304,6 +304,28 @@ jobs:
             exit 1
           }
 
+          echo "===== Required A20 Module.symvers exports ====="
+          for sym in __check_object_size fortify_panic page_address; do
+            awk -v s="$sym" '
+              $2 == s && $1 == "0x00000000" && $4 == "EXPORT_SYMBOL" {
+                print
+                found=1
+              }
+              END { if (!found) exit 1 }
+            ' "$SRC/Module.symvers" || {
+              echo "::error::Required A20 export missing or has wrong CRC/type: $sym"
+              exit 1
+            }
+          done
+
+          # Allow either supplied Diretta module to satisfy imports from the other.
+          : > .work/diretta/combined-module-exports.txt
+          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            arm-linux-gnueabihf-nm -g --defined-only "$module" 2>/dev/null \
+              | awk 'NF {print $NF}' >> .work/diretta/combined-module-exports.txt
+          done
+          sort -u -o .work/diretta/combined-module-exports.txt .work/diretta/combined-module-exports.txt
+
           REPORT="$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
           MISSING_TOTAL=0
           {
@@ -314,6 +336,14 @@ jobs:
             echo
             echo "Static vermagic and exported-symbol-name checks do not prove complete binary ABI compatibility."
             echo
+            echo "[Required A20 exports: CRC 0x00000000 / EXPORT_SYMBOL]"
+            for REQUIRED_SYMBOL in __check_object_size fortify_panic page_address; do
+              awk -v s="$REQUIRED_SYMBOL" '$2 == s {print}' "$SRC/Module.symvers"
+            done
+            echo
+            echo "[Symbols exported by the two supplied Diretta modules]"
+            cat .work/diretta/combined-module-exports.txt
+            echo
             for MODULE in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
               NAME="$(basename "$MODULE")"
               SYMBOL_LIST=".work/diretta/$NAME.undefined"
@@ -321,7 +351,8 @@ jobs:
               : > "$MISSING_FILE"
               while IFS= read -r SYMBOL; do
                 [[ -n "$SYMBOL" ]] || continue
-                if ! awk -v s="$SYMBOL" '$2 == s {found=1} END {exit !found}' "$SRC/Module.symvers"; then
+                if ! awk -v s="$SYMBOL" '$2 == s {found=1} END {exit !found}' "$SRC/Module.symvers" \
+                    && ! grep -Fxq "$SYMBOL" .work/diretta/combined-module-exports.txt; then
                   echo "$SYMBOL" >> "$MISSING_FILE"
                 fi
               done < "$SYMBOL_LIST"
