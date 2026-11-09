@@ -1,4 +1,4 @@
-name: Build official Raspberry Pi ARMv7 kernel with Diretta modules
+name: Build Fedora 6.2.15 ARMv7 kernel with Diretta modules (v5)
 
 on:
   workflow_dispatch:
@@ -8,31 +8,29 @@ on:
         required: false
         default: "0"
         type: string
-      source_branch:
-        description: "Official Raspberry Pi kernel branch"
-        required: true
-        default: "rpi-6.2.y"
-        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: rpi-armv7-diretta-v5-${{ github.ref }}
+  group: fedora-6.2.15-armv7-diretta-v5-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Official Pi 2 / Pi 3 ARMv7 kernel and Diretta ABI gate
+    name: Fedora SRPM 6.2.15 / Pi 2 + Pi 3 ARMv7
     runs-on: ubuntu-24.04
     timeout-minutes: 240
-
     env:
-      RPI_KERNEL_REPO: https://github.com/raspberrypi/linux.git
+      RELEASE_TAG: "6.2.15"
+      SRPM_NAME: "kernel-6.2.15-100.fc36.src.rpm"
+      SRPM_SHA256: "f2f2fef31c54111720782b7867bc727d4f67866864a0e54c9dab9c606737f570"
+      SOURCE_NAME: "linux-6.2.15.tar.xz"
+      SOURCE_SHA256: "bc2d24c3a8bba92f92f3b480381fe7c80bb85d694fda656a1e030f55b926c766"
+      EXPECTED_RELEASE: "6.2.15-215.fc36.armv7hl"
+      EXPECTED_VERMAGIC: "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
       ARCH: arm
       CROSS_COMPILE: arm-linux-gnueabihf-
-      EXPECTED_RELEASE: 6.2.15-215.fc36.armv7hl
-      EXPECTED_VERMAGIC: "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
 
     steps:
       - name: Checkout project
@@ -40,295 +38,360 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Validate original Diretta modules
+      - name: Validate repository inputs and original Diretta modules
         shell: bash
         run: |
           set -Eeuo pipefail
+          test -s sources/kernel-srpm/MANIFEST.txt
+          test -s sources/kernel-srpm/SHA256SUMS
+          test -s sources/kernel-srpm/kernel.spec
+          test -s sources/kernel-srpm/kernel-armv7hl-fedora.config
+          test -s sources/kernel-srpm/patch-6.2-redhat.patch
+          test -s modules/diretta/alsa_bridge.ko
+          test -s modules/diretta/diretta_direct.ko
+          (cd modules/diretta && sha256sum -c SHA256SUMS)
           for f in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
-            test -s "$f" || { echo "::error::Missing $f"; exit 1; }
-            readelf -h "$f" | grep -q 'Class:.*ELF32'
-            readelf -h "$f" | grep -q 'Machine:.*ARM'
             v="$(modinfo -F vermagic "$f" | xargs)"
-            echo "$f: $v"
             [[ "$v" == "$EXPECTED_VERMAGIC" ]] || {
-              echo "::error::Unexpected original module vermagic: $v"
+              echo "::error::Unexpected original module vermagic for $f: $v"
               exit 1
             }
+            readelf -h "$f" | grep -q 'Class:.*ELF32'
+            readelf -h "$f" | grep -q 'Machine:.*ARM'
+            readelf -S "$f" | grep -q '__versions' && {
+              echo "::error::$f contains __versions; this workflow expects the recorded no-MODVERSIONS module ABI."
+              exit 1
+            } || true
           done
           mkdir -p .work/diretta
           for f in modules/diretta/*.ko; do
-            n="$(basename "$f")"
-            nm -u "$f" 2>/dev/null |
-              awk '$1 == "U" {print $2}' | sort -u > ".work/diretta/$n.undefined"
+            b="$(basename "$f")"
+            nm -u "$f" | awk '$1 == "U" {print $2}' | sort -u > ".work/diretta/$b.undefined"
+            modinfo -F depends "$f" > ".work/diretta/$b.depends"
           done
-          sha256sum modules/diretta/*.ko | tee .work/diretta/original.sha256
+          cp modules/diretta/SHA256SUMS .work/diretta/original.sha256
 
-      - name: Install cross-build dependencies
+      - name: Install build dependencies
         shell: bash
         run: |
           set -Eeuo pipefail
           sudo apt-get update
-          sudo apt-get install -y             bc bison build-essential ca-certificates cpio curl device-tree-compiler             dwarves flex gcc-arm-linux-gnueabihf git kmod libelf-dev libssl-dev             make rsync python3 xz-utils zstd binutils-arm-linux-gnueabihf
+          sudo apt-get install -y bc bison build-essential cpio curl device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf git kmod libelf-dev libssl-dev make rpm2cpio rsync xz-utils zstd binutils-arm-linux-gnueabihf
           arm-linux-gnueabihf-gcc --version | head -n 1
 
-      - name: Fetch official Raspberry Pi source and select 6.2.15 revision
-        shell: bash
-        env:
-          SOURCE_BRANCH: ${{ inputs.source_branch }}
-        run: |
-          set -Eeuo pipefail
-          git clone --no-single-branch "$RPI_KERNEL_REPO" .work/linux
-          cd .work/linux
-          git fetch --no-tags origin "$SOURCE_BRANCH"
-          git checkout -B build-source FETCH_HEAD
-
-          # Select the newest commit on this official branch whose top-level
-          # Makefile identifies Linux 6.2.15. Do not fake the kernel version.
-          CANDIDATE=""
-          while IFS= read -r commit; do
-            [[ -n "$commit" ]] || continue
-            git show "$commit:Makefile" > /tmp/rpi-makefile
-            version="$(awk -F ' = ' '/^VERSION =/{v=$2} /^PATCHLEVEL =/{p=$2} /^SUBLEVEL =/{s=$2} END{print v "." p "." s}' /tmp/rpi-makefile)"
-            if [[ "$version" == "6.2.15" ]]; then
-              CANDIDATE="$commit"
-              break
-            fi
-          done < <(git log --format='%H' --first-parent FETCH_HEAD -- Makefile)
-
-          if [[ -z "$CANDIDATE" ]]; then
-            echo "::error::No Linux 6.2.15 revision found on official branch $SOURCE_BRANCH."
-            echo "The original Diretta modules target 6.2.15; refusing to relabel another kernel."
-            exit 1
-          fi
-
-          git checkout --detach "$CANDIDATE"
-          test "$(make -s ARCH=arm kernelversion)" = "6.2.15"
-          echo "RPI_SOURCE_COMMIT=$CANDIDATE" >> "$GITHUB_ENV"
-          echo "Official Raspberry Pi source commit: $CANDIDATE"
-          git log -1 --oneline
-
-      - name: Configure official bcm2709 ARMv7 kernel
+      - name: Download and verify repository Release 6.2.15 sources
         shell: bash
         run: |
           set -Eeuo pipefail
-          cd .work/linux
+          mkdir -p .work/download .work/srpm
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+          curl -fL --retry 3 "$base/$SRPM_NAME" -o ".work/download/$SRPM_NAME"
+          curl -fL --retry 3 "$base/$SOURCE_NAME" -o ".work/download/$SOURCE_NAME"
+          echo "$SRPM_SHA256  .work/download/$SRPM_NAME" | sha256sum -c -
+          echo "$SOURCE_SHA256  .work/download/$SOURCE_NAME" | sha256sum -c -
+          rpm2cpio ".work/download/$SRPM_NAME" | (cd .work/srpm && cpio -idm --quiet)
+          find .work/srpm -type f | sort > .work/srpm-files.txt
+          test -s .work/srpm-files.txt
+          find .work/srpm -type f -name kernel.spec -print -quit | grep -q .
+          find .work/srpm -type f -name kernel-armv7hl-fedora.config -print -quit | grep -q .
+          find .work/srpm -type f -name patch-6.2-redhat.patch -print -quit | grep -q .
+          echo "SRPM extracted; source and SRPM checksums verified."
 
-          make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" bcm2709_defconfig
+      - name: Prepare Fedora kernel source and apply Fedora patchset
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/kernel
+          tar -xJf ".work/download/$SOURCE_NAME" -C .work/kernel
+          src="$GITHUB_WORKSPACE/.work/kernel/linux-6.2.15"
+          test -f "$src/Makefile"
+          test "$(awk -F ' = ' '/^VERSION =/{v=$2} /^PATCHLEVEL =/{p=$2} /^SUBLEVEL =/{s=$2} END{print v "." p "." s}' "$src/Makefile")" = "6.2.15"
 
-          # Preserve the original module's release string. This does not
-          # manufacture ABI compatibility; the subsequent gates are mandatory.
-          scripts/config --file .config             --set-str LOCALVERSION "-215.fc36.armv7hl"             --disable LOCALVERSION_AUTO             --enable MODULES             --enable MODULE_UNLOAD             --enable SMP             --enable PREEMPT             --enable AEABI             --enable VFP             --enable VFPv3             --enable NEON             --enable USB             --enable USB_DWCOTG             --enable USB_USBNET             --module USB_NET_SMSC95XX             --enable MII             --enable NET             --enable INET             --enable DEVTMPFS             --enable DEVTMPFS_MOUNT             --enable MMC             --enable MMC_BLOCK             --enable MMC_BCM2835             --enable EXT4_FS             --enable BINFMT_MISC             --enable AUDIT             --module ZRAM             --enable CFG80211             --enable MAC80211             --module BRCMFMAC             --enable FW_LOADER             --disable MODULE_COMPRESS             --disable MODULE_COMPRESS_GZIP             --disable MODULE_COMPRESS_XZ             --disable MODULE_COMPRESS_ZSTD
+          srpm_spec="$(find .work/srpm -type f -name kernel.spec -print -quit)"
+          srpm_config="$(find .work/srpm -type f -name kernel-armv7hl-fedora.config -print -quit)"
+          srpm_patch="$(find .work/srpm -type f -name patch-6.2-redhat.patch -print -quit)"
+          srpm_makefile="$(find .work/srpm -type f -name Makefile.rhelver -print -quit)"
+          test -n "$srpm_spec" && test -n "$srpm_config" && test -n "$srpm_patch" && test -n "$srpm_makefile"
 
+          cp "$srpm_config" "$GITHUB_WORKSPACE/.work/fedora-armv7hl.config"
+          cp "$srpm_spec" "$GITHUB_WORKSPACE/.work/kernel.spec"
+          cp "$srpm_patch" "$GITHUB_WORKSPACE/.work/patch-6.2-redhat.patch"
+          cp "$srpm_makefile" "$src/Makefile.rhelver"
+
+          # Match the Fedora SRPM %prep semantics: apply its declared Red Hat
+          # patch to the exact linux-6.2.15 source archive, never to RPi Git.
+          cd "$src"
+          git init -q
+          git config user.email build@localhost
+          git config user.name "GitHub Actions"
+          git add -A
+          git -c core.autocrlf=false apply --check "$GITHUB_WORKSPACE/.work/patch-6.2-redhat.patch"
+          git -c core.autocrlf=false apply "$GITHUB_WORKSPACE/.work/patch-6.2-redhat.patch"
+          touch .scmversion
+          printf '%s\n' "Fedora SRPM: $SRPM_NAME" "Source archive: $SOURCE_NAME" "Fedora patch: patch-6.2-redhat.patch" > "$GITHUB_WORKSPACE/.work/source-provenance.txt"
+          git diff --stat | tee "$GITHUB_WORKSPACE/.work/fedora-patch-stat.txt"
+
+      - name: Configure Fedora ARMv7 baseline plus Raspberry Pi board support
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          src="$GITHUB_WORKSPACE/.work/kernel/linux-6.2.15"
+          cd "$src"
+          cp "$GITHUB_WORKSPACE/.work/fedora-armv7hl.config" .config
+
+          # Fedora's armv7hl config is the ABI-oriented baseline. Add only
+          # Raspberry Pi 2/3 platform/device support required by this target.
+          cat > "$GITHUB_WORKSPACE/.work/rpi2-rpi3.fragment" <<'EOF'
+          CONFIG_ARCH_MULTI_V6=y
+          CONFIG_ARCH_MULTI_V7=y
+          CONFIG_ARCH_BCM2835=y
+          CONFIG_BCM2835_MBOX=y
+          CONFIG_BCM2835_WDT=y
+          CONFIG_BCM2835_POWER=y
+          CONFIG_BCM2835_THERMAL=y
+          CONFIG_MMC=y
+          CONFIG_MMC_BLOCK=y
+          CONFIG_MMC_BCM2835=y
+          CONFIG_PINCTRL=y
+          CONFIG_PINCTRL_BCM2835=y
+          CONFIG_SERIAL_AMBA_PL011=y
+          CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
+          CONFIG_USB=y
+          CONFIG_USB_DWCOTG=y
+          CONFIG_USB_USBNET=y
+          CONFIG_USB_NET_SMSC95XX=m
+          CONFIG_MII=y
+          CONFIG_NET=y
+          CONFIG_INET=y
+          CONFIG_EXT4_FS=y
+          CONFIG_DEVTMPFS=y
+          CONFIG_DEVTMPFS_MOUNT=y
+          CONFIG_BLK_DEV_INITRD=y
+          CONFIG_RD_GZIP=y
+          CONFIG_MODULES=y
+          CONFIG_MODULE_UNLOAD=y
+          CONFIG_SMP=y
+          CONFIG_PREEMPT=y
+          # Match the supplied Diretta objects: they do not carry __versions.
+          # Do not enable CONFIG_MODVERSIONS to make the CRC model differ.
+          # CONFIG_MODVERSIONS is not set
+          # Do not require signatures for the original vendor modules.
+          # CONFIG_MODULE_SIG_FORCE is not set
+          EOF
+          scripts/kconfig/merge_config.sh -m .config "$GITHUB_WORKSPACE/.work/rpi2-rpi3.fragment"
+          scripts/config --file .config --set-str LOCALVERSION "" --disable LOCALVERSION_AUTO --disable MODVERSIONS --disable MODULE_SIG_FORCE
+          # Fedora release identity from kernel.spec: 6.2.15 + 215.fc36.armv7hl.
+          sed -i 's/^EXTRAVERSION.*/EXTRAVERSION = -215.fc36.armv7hl/' Makefile
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" syncconfig
 
-          actual_release="$(make -s ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
-          echo "Kernel release: $actual_release"
-          [[ "$actual_release" == "$EXPECTED_RELEASE" ]] || {
-            echo "::error::Kernel release mismatch: $actual_release"
+          actual="$(make -s ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
+          echo "Kernel release: $actual"
+          [[ "$actual" == "$EXPECTED_RELEASE" ]] || {
+            echo "::error::Expected $EXPECTED_RELEASE, got $actual"
             exit 1
           }
-
-          for sym in CONFIG_CPU_V7 CONFIG_NEON CONFIG_BLK_DEV_INITRD CONFIG_RD_GZIP CONFIG_USB CONFIG_USB_USBNET CONFIG_USB_NET_SMSC95XX CONFIG_MMC_BCM2835 CONFIG_EXT4_FS; do
+          for sym in CONFIG_ARCH_BCM2835 CONFIG_BCM2835_MBOX CONFIG_MMC_BCM2835 CONFIG_USB_DWCOTG CONFIG_USB_NET_SMSC95XX CONFIG_EXT4_FS CONFIG_BLK_DEV_INITRD CONFIG_RD_GZIP CONFIG_MODULES CONFIG_MODULE_UNLOAD CONFIG_SMP CONFIG_PREEMPT; do
             grep -Eq "^$sym=(y|m)$" .config || {
-              echo "::error::Required config missing: $sym"
+              echo "::error::Required target config absent after olddefconfig: $sym"
               exit 1
             }
           done
+          ! grep -q '^CONFIG_MODVERSIONS=y' .config
+          cp .config "$GITHUB_WORKSPACE/fedora-armv7-rpi-v5.config"
+          cp .config "$GITHUB_WORKSPACE/.work/final.config"
+          echo "KERNEL_RELEASE=$actual" >> "$GITHUB_ENV"
 
-          cp .config "$GITHUB_WORKSPACE/rpi-armv7-v5.config"
-          echo "KERNEL_RELEASE=$actual_release" >> "$GITHUB_ENV"
-
-      - name: Build kernel, modules and device trees
+      - name: Build Fedora-derived ARMv7 kernel, modules and DTBs
         shell: bash
         env:
           BUILD_JOBS: ${{ inputs.jobs }}
         run: |
           set -Eeuo pipefail
           jobs="$BUILD_JOBS"
-          [[ -n "$jobs" && "$jobs" != "0" ]] || jobs="$(nproc)"
-          [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid jobs"; exit 1; }
+          [[ "$jobs" =~ ^[0-9]+$ ]] || { echo "::error::jobs must be numeric"; exit 1; }
+          [[ "$jobs" != "0" ]] || jobs="$(nproc)"
+          src="$GITHUB_WORKSPACE/.work/kernel/linux-6.2.15"
+          make -C "$src" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" -j"$jobs" zImage modules dtbs
+          test -s "$src/arch/arm/boot/zImage"
+          test -s "$src/Module.symvers"
+          test -s "$src/System.map"
+          for dtb in bcm2836-rpi-2-b.dtb bcm2837-rpi-3-b.dtb; do
+            test -s "$src/arch/arm/boot/dts/$dtb" || {
+              echo "::error::Expected DTB missing from Fedora source tree: $dtb"
+              exit 1
+            }
+          done
 
-          make -C .work/linux ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" -j"$jobs" zImage modules dtbs
-          test -s .work/linux/arch/arm/boot/zImage
-          test -s .work/linux/Module.symvers
-          test -s .work/linux/System.map
-
-      - name: Verify Diretta vermagic and exported symbol coverage
+      - name: Diretta static ABI gate
         shell: bash
         run: |
           set -Eeuo pipefail
-          cd .work/linux
-
+          src="$GITHUB_WORKSPACE/.work/kernel/linux-6.2.15"
+          cd "$src"
           sample="$(find . -type f -name '*.ko' -print -quit)"
           test -n "$sample"
           built_vermagic="$(modinfo -F vermagic "$sample" | xargs)"
-          echo "Built module vermagic: $built_vermagic"
           [[ "$built_vermagic" == "$EXPECTED_VERMAGIC" ]] || {
-            echo "::error::Kernel module ABI vermagic differs from the original Diretta modules."
+            echo "::error::Built module vermagic mismatch: $built_vermagic"
             exit 1
           }
 
-          missing_total=0
+          missing=0
           for module in "$GITHUB_WORKSPACE"/modules/diretta/*.ko; do
             name="$(basename "$module")"
             while IFS= read -r symbol; do
               [[ -n "$symbol" ]] || continue
-              if ! awk -v s="$symbol" '$2 == s {found=1} END {exit !found}' Module.symvers; then
-                echo "::error::$name imports missing kernel export: $symbol"
-                missing_total=$((missing_total + 1))
+              row="$(awk -v s="$symbol" '$2 == s {print; exit}' Module.symvers)"
+              if [[ -z "$row" ]]; then
+                echo "::error::$name imports symbol not exported by kernel/modules: $symbol"
+                missing=$((missing + 1))
+                continue
+              fi
+              export_type="$(awk -v s="$symbol" '$2 == s {print $4; exit}' Module.symvers)"
+              if [[ "$export_type" == "EXPORT_SYMBOL_GPL" ]]; then
+                license="$(modinfo -F license "$module" | tr -d '\r')"
+                case "$license" in
+                  *GPL*|*BSD*) ;;
+                  *) echo "::error::$name may not import GPL-only symbol $symbol with license $license"; missing=$((missing + 1));;
+                esac
               fi
             done < "$GITHUB_WORKSPACE/.work/diretta/$name.undefined"
           done
-          [[ "$missing_total" -eq 0 ]] || exit 1
+          [[ "$missing" -eq 0 ]] || exit 1
 
-          # Preserve exact original module bytes in the package.
+          # Report config and source provenance; static checks do not prove runtime ABI.
           sha256sum "$GITHUB_WORKSPACE"/modules/diretta/*.ko
+          readelf -A "$GITHUB_WORKSPACE/modules/diretta/alsa_bridge.ko" > "$GITHUB_WORKSPACE/.work/diretta/alsa_bridge.attributes.txt"
+          readelf -A "$GITHUB_WORKSPACE/modules/diretta/diretta_direct.ko" > "$GITHUB_WORKSPACE/.work/diretta/diretta_direct.attributes.txt"
+          cp Module.symvers "$GITHUB_WORKSPACE/.work/Module.symvers"
 
-      - name: Build ARMv7 initramfs for PARTUUID-based root boot
+      - name: Build static ARMv7 initramfs
         shell: bash
         run: |
           set -Eeuo pipefail
           work="$GITHUB_WORKSPACE/.work/initramfs"
           root="$work/root"
           mkdir -p "$root"/{bin,dev,proc,sys,newroot}
-
-          # Build a small, statically linked ARMv7 BusyBox so the initramfs
-          # does not accidentally contain x86_64 host executables.
           git clone --depth 1 --branch 1_36_1 https://git.busybox.net/busybox "$work/busybox"
           cd "$work/busybox"
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
           sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
-          sed -i 's/^CONFIG_FEATURE_SH_STANDALONE=y/# CONFIG_FEATURE_SH_STANDALONE is not set/' .config || true
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j"$(nproc)"
           install -m 0755 busybox "$root/bin/busybox"
-          "$CROSS_COMPILE"readelf -h "$root/bin/busybox" | grep -q 'Class:.*ELF32'
-          "$CROSS_COMPILE"readelf -h "$root/bin/busybox" | grep -q 'Machine:.*ARM'
-
-          for app in sh mount umount mkdir sleep mdev switch_root cat sed tr; do
-            ln -sf busybox "$root/bin/$app"
-          done
-
+          arm-linux-gnueabihf-readelf -h "$root/bin/busybox" | grep -q 'Class:.*ELF32'
+          arm-linux-gnueabihf-readelf -l "$root/bin/busybox" | (! grep -q INTERP)
+          for app in sh mount umount mkdir sleep mdev switch_root cat sed tr; do ln -sf busybox "$root/bin/$app"; done
           cat > "$root/init" <<'INIT'
           #!/bin/sh
           export PATH=/bin
           mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
           mount -t proc proc /proc
           mount -t sysfs sysfs /sys
-          echo "initramfs: locating root filesystem..."
-          CMDLINE="$(cat /proc/cmdline)"
-          ROOT=""
-          ROOTFS="ext4"
-          ROOTWAIT=30
-          for arg in $CMDLINE; do
+          cmdline="$(cat /proc/cmdline)"
+          rootarg=""
+          rootfstype="ext4"
+          rootwait=0
+          rootdelay=0
+          for arg in $cmdline; do
             case "$arg" in
-              root=*) ROOT="${arg#root=}" ;;
-              rootfstype=*) ROOTFS="${arg#rootfstype=}" ;;
-              rootwait) ROOTWAIT=120 ;;
+              root=*) rootarg="${arg#root=}" ;;
+              rootfstype=*) rootfstype="${arg#rootfstype=}" ;;
+              rootwait) rootwait=1 ;;
+              rootdelay=*) rootdelay="${arg#rootdelay=}" ;;
             esac
           done
-          case "$ROOT" in
-            PARTUUID=*)
-              wanted="${ROOT#PARTUUID=}"
-              elapsed=0
-              while [ "$elapsed" -lt "$ROOTWAIT" ]; do
+          case "$rootdelay" in ''|*[!0-9]*) rootdelay=0;; esac
+          sleep "$rootdelay"
+          elapsed=0
+          while :; do
+            dev=""
+            case "$rootarg" in
+              /dev/*) [ -b "$rootarg" ] && dev="$rootarg" ;;
+              PARTUUID=*)
+                wanted="${rootarg#PARTUUID=}"
                 for sysdev in /sys/class/block/*; do
-                  [ -f "$sysdev/uevent" ] || continue
-                  partuuid="$(sed -n 's/^PARTUUID=//p' "$sysdev/uevent")"
-                  partuuid="$(printf '%s' "$partuuid" | tr '[:upper:]' '[:lower:]')"
-                  wanted_lc="$(printf '%s' "$wanted" | tr '[:upper:]' '[:lower:]')"
-                  if [ -n "$partuuid" ] && [ "$partuuid" = "$wanted_lc" ]; then
-                    dev="/dev/${sysdev##*/}"
-                    break 2
-                  fi
-                done
-                sleep 1
-                elapsed=$((elapsed + 1))
-              done
-              ;;
-            /dev/*) dev="$ROOT" ;;
-          esac
-          if [ -z "$dev" ] || [ ! -b "$dev" ]; then
-            echo "initramfs: cannot resolve root=$ROOT"
-            exec sh
-          fi
+                  [ -e "$sysdev/partition" ] || continue
+                  dev="/dev/${sysdev##*/}"
+                  uuid="$(/bin/busybox blkid -s PARTUUID -o value "$dev" 2>/dev/null || true)"
+                  [ -n "$uuid" ] && [ "$(echo "$uuid" | tr '[:upper:]' '[:lower:]')" = "$(echo "$wanted" | tr '[:upper:]' '[:lower:]')" ] && break
+                  dev=""
+                done ;;
+            esac
+            [ -n "$dev" ] && break
+            [ "$rootwait" = "0" ] && [ "$elapsed" -ge 30 ] && break
+            sleep 1
+            elapsed=$((elapsed + 1))
+          done
+          if [ -z "$dev" ]; then echo "initramfs: cannot resolve root=$rootarg"; exec sh; fi
           mkdir -p /newroot
-          if ! mount -t "$ROOTFS" -o rw "$dev" /newroot; then
-            echo "initramfs: failed to mount $dev as $ROOTFS"
-            exec sh
-          fi
-          [ -x /newroot/sbin/init ] || [ -x /newroot/lib/systemd/systemd ] || {
-            echo "initramfs: mounted root has no init"
-            exec sh
-          }
-          exec switch_root /newroot /sbin/init
+          mount -t "$rootfstype" -o rw "$dev" /newroot || { echo "initramfs: mount failed"; exec sh; }
+          if [ -x /newroot/sbin/init ]; then nextinit=/sbin/init
+          elif [ -x /newroot/lib/systemd/systemd ]; then nextinit=/lib/systemd/systemd
+          else echo "initramfs: no init found"; exec sh; fi
+          exec switch_root /newroot "$nextinit"
           INIT
           chmod 0755 "$root/init"
+          (cd "$root" && find . -print0 | cpio --null -o -H newc --owner=0:0 | gzip -9) > "$GITHUB_WORKSPACE/.work/initramfs7"
+          test -s "$GITHUB_WORKSPACE/.work/initramfs7"
 
-          # Device nodes are created dynamically by devtmpfs; keep the
-          # archive independent of host device-node permissions.
-          (cd "$root" && find . -print0 | cpio --null -o -H newc --owner=0:0 | gzip -9) > "$GITHUB_WORKSPACE/package-initramfs7"
-          test -s "$GITHUB_WORKSPACE/package-initramfs7"
-          file "$GITHUB_WORKSPACE/package-initramfs7"
-
-      - name: Install and package kernel modules
+      - name: Package kernel, DTBs, modules, initramfs and provenance
         shell: bash
         run: |
           set -Eeuo pipefail
           pkg="$GITHUB_WORKSPACE/package"
-          mkdir -p "$pkg/boot/overlays" "$pkg/lib/modules" "$pkg/modules/diretta" "$pkg/build-info"
-          install -m 0644 "$GITHUB_WORKSPACE/package-initramfs7" "$pkg/boot/initramfs7"
-
-          install -m 0644 .work/linux/arch/arm/boot/zImage "$pkg/boot/kernel7.img"
-
-          # Include Pi 2 and Pi 3 DTBs plus the complete DTB set and overlays.
-          find .work/linux/arch/arm/boot/dts -maxdepth 1 -type f -name '*.dtb' -exec cp -t "$pkg/boot/" {} +
-          find .work/linux/arch/arm/boot/dts/overlays -maxdepth 1 -type f \( -name '*.dtbo' -o -name 'README' \) -exec cp -t "$pkg/boot/overlays/" {} +
-
-          test -s "$pkg/boot/bcm2836-rpi-2-b.dtb"
-          test -s "$pkg/boot/bcm2837-rpi-3-b.dtb"
-
-          make -C .work/linux ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$pkg" modules_install
+          src="$GITHUB_WORKSPACE/.work/kernel/linux-6.2.15"
+          mkdir -p "$pkg/boot/overlays" "$pkg/lib/modules" "$pkg/lib/modules/$KERNEL_RELEASE/extra/diretta" "$pkg/build-info"
+          install -m 0644 "$src/arch/arm/boot/zImage" "$pkg/boot/kernel7.img"
+          install -m 0644 "$GITHUB_WORKSPACE/.work/initramfs7" "$pkg/boot/initramfs7"
+          find "$src/arch/arm/boot/dts" -maxdepth 1 -type f -name '*.dtb' -exec cp -t "$pkg/boot/" {} +
+          if [ -d "$src/arch/arm/boot/dts/overlays" ]; then
+            find "$src/arch/arm/boot/dts/overlays" -maxdepth 1 -type f \( -name '*.dtbo' -o -name README \) -exec cp -t "$pkg/boot/overlays/" {} +
+          fi
+          make -C "$src" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$pkg" modules_install
           rm -f "$pkg/lib/modules/$KERNEL_RELEASE/build" "$pkg/lib/modules/$KERNEL_RELEASE/source"
+          install -m 0644 modules/diretta/alsa_bridge.ko "$pkg/lib/modules/$KERNEL_RELEASE/extra/diretta/"
+          install -m 0644 modules/diretta/diretta_direct.ko "$pkg/lib/modules/$KERNEL_RELEASE/extra/diretta/"
           depmod -b "$pkg" "$KERNEL_RELEASE"
-
-          install -m 0644 modules/diretta/alsa_bridge.ko "$pkg/modules/diretta/"
-          install -m 0644 modules/diretta/diretta_direct.ko "$pkg/modules/diretta/"
-          install -m 0644 .work/linux/.config "$pkg/build-info/kernel.config"
-          install -m 0644 .work/linux/Module.symvers "$pkg/build-info/Module.symvers"
-          install -m 0644 .work/linux/System.map "$pkg/build-info/System.map"
-          printf '%s\n' "$RPI_SOURCE_COMMIT" > "$pkg/build-info/raspberrypi-linux-commit.txt"
+          install -m 0644 "$src/.config" "$pkg/build-info/kernel.config"
+          install -m 0644 "$src/Module.symvers" "$pkg/build-info/Module.symvers"
+          install -m 0644 "$src/System.map" "$pkg/build-info/System.map"
+          cp .work/source-provenance.txt "$pkg/build-info/"
+          cp .work/fedora-patch-stat.txt "$pkg/build-info/"
           cp .work/diretta/original.sha256 "$pkg/build-info/diretta-original.sha256"
-
+          cp .work/diretta/*.attributes.txt "$pkg/build-info/"
+          cp .work/diretta/*.depends "$pkg/build-info/"
+          cp .work/diretta/*.undefined "$pkg/build-info/"
           cat > "$pkg/README.txt" <<EOF
-          Official Raspberry Pi ARMv7 kernel for Pi 2 / Pi 3
+          Fedora SRPM-derived Linux kernel for Raspberry Pi 2 / Pi 3 (ARMv7)
           Kernel release: $KERNEL_RELEASE
-          Source: raspberrypi/linux
-          Source commit: $RPI_SOURCE_COMMIT
-          Config: bcm2709_defconfig
+          Source: Release 6.2.15 asset linux-6.2.15.tar.xz
+          SRPM: $SRPM_NAME
+          Fedora patch: patch-6.2-redhat.patch
+          Base config: kernel-armv7hl-fedora.config plus Raspberry Pi platform fragment
           Kernel image: boot/kernel7.img
-          Initramfs: boot/initramfs7 (ARMv7 static BusyBox; PARTUUID/device root support)
-          Device trees: boot/*.dtb
-          Overlays: boot/overlays/
+          Initramfs: boot/initramfs7
+          DTBs: boot/*.dtb
           Modules: lib/modules/$KERNEL_RELEASE/
-          Original Diretta modules: modules/diretta/
-          NOTE: vermagic and symbol checks are static checks, not proof of runtime ABI compatibility.
+          Diretta modules: lib/modules/$KERNEL_RELEASE/extra/diretta/
+          Original Diretta module bytes are preserved and SHA256-verified.
+          Static symbol/vermagic checks are not proof of runtime ABI compatibility.
+          Test on the target Pi 2 / Pi 3 before deployment.
           EOF
-
-          tar -czf "rpi-armv7-diretta-$KERNEL_RELEASE.tar.gz" -C "$GITHUB_WORKSPACE" package
-          sha256sum "rpi-armv7-diretta-$KERNEL_RELEASE.tar.gz" > "rpi-armv7-diretta-$KERNEL_RELEASE.tar.gz.sha256"
+          tar -czf "fedora-armv7-diretta-$KERNEL_RELEASE.tar.gz" -C "$GITHUB_WORKSPACE" package
+          sha256sum "fedora-armv7-diretta-$KERNEL_RELEASE.tar.gz" > "fedora-armv7-diretta-$KERNEL_RELEASE.tar.gz.sha256"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rpi-armv7-diretta-v5-${{ env.KERNEL_RELEASE }}
+          name: fedora-armv7-diretta-v5-${{ env.KERNEL_RELEASE }}
           if-no-files-found: error
           retention-days: 30
           path: |
-            rpi-armv7-diretta-${{ env.KERNEL_RELEASE }}.tar.gz
-            rpi-armv7-diretta-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
-            rpi-armv7-v5.config
+            fedora-armv7-diretta-${{ env.KERNEL_RELEASE }}.tar.gz
+            fedora-armv7-diretta-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
+            fedora-armv7-rpi-v5.config
             package/README.txt
             package/boot/initramfs7
             package/boot/*.dtb
