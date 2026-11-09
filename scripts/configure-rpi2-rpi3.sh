@@ -281,8 +281,8 @@ def prune(rel, sym):
     if sym in keep:
         return False
 
-    # No camera capture, TV tuner, DVB, radio or PCI media hardware in this
-    # headless audio-player profile.
+    # Keep the BCM2835 camera pipeline and the Pi camera sensors (OV5647 /
+    # IMX219); drop unrelated USB capture cards, DVB tuners and radio devices.
     if rel.startswith("drivers/media/"):
         return sym not in {
             "MEDIA_SUPPORT", "MEDIA_CAMERA_SUPPORT", "MEDIA_CONTROLLER",
