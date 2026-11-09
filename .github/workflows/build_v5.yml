@@ -58,10 +58,10 @@ jobs:
             }
             readelf -h "$f" | grep -q 'Class:.*ELF32'
             readelf -h "$f" | grep -q 'Machine:.*ARM'
-            readelf -S "$f" | grep -q '__versions' && {
+            if readelf -S "$f" | grep -q '__versions'; then
               echo "::error::$f contains __versions; this workflow expects the recorded no-MODVERSIONS module ABI."
               exit 1
-            } || true
+            fi
           done
           mkdir -p .work/diretta
           for f in modules/diretta/*.ko; do
@@ -277,11 +277,18 @@ jobs:
           cd "$work/busybox"
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
           sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          # Required initramfs applets, including PARTUUID lookup.
+          for opt in BLKID SWITCH_ROOT MOUNT UMOUNT SLEEP MDEV; do
+            sed -i "s/^# CONFIG_${opt} is not set/CONFIG_${opt}=y/" .config
+          done
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j"$(nproc)"
           install -m 0755 busybox "$root/bin/busybox"
           arm-linux-gnueabihf-readelf -h "$root/bin/busybox" | grep -q 'Class:.*ELF32'
-          arm-linux-gnueabihf-readelf -l "$root/bin/busybox" | (! grep -q INTERP)
+          if arm-linux-gnueabihf-readelf -l "$root/bin/busybox" | grep -q INTERP; then
+            echo "::error::BusyBox is dynamically linked; initramfs requires a static binary."
+            exit 1
+          fi
           for app in sh mount umount mkdir sleep mdev switch_root cat sed tr; do ln -sf busybox "$root/bin/$app"; done
           cat > "$root/init" <<'INIT'
           #!/bin/sh
