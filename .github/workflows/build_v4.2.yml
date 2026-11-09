@@ -521,7 +521,8 @@ jobs:
             media/DVB, unrelated Ethernet/Wi-Fi, USB serial/gadget/misc, other
             SoC audio, storage and peripheral drivers. It retains Pi SD/MMC,
             DWC USB, SMSC95xx/LAN78xx Ethernet, Pi 3 Broadcom SDIO Wi-Fi/BT,
-            BCM2835 buses, PL011, VC4/VCHIQ, USB storage and Pi/USB audio.
+            BCM2835 buses, PL011, VC4/VCHIQ, Pi camera (BCM2835/OV5647/IMX219),
+            Pi touchscreen/sensors/power options, USB storage and Pi/USB audio.
             Missing or unavailable hardware symbols are reported as advisory
             entries and do not stop compilation. CONFIG_MODVERSIONS is disabled
             to match the supplied Diretta modules.
