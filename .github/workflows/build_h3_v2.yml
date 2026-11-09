@@ -24,6 +24,7 @@ jobs:
 
     env:
       KERNEL_VERSION: "6.2.15"
+      RELEASE_TAG: "6.2.15"
       KERNEL_RELEASE: "6.2.15-215.fc36.armv7hl"
       SRPM_NAME: "kernel-6.2.15-100.fc36.src.rpm"
       SOURCE_TARBALL: "linux-6.2.15.tar.xz"
@@ -61,7 +62,7 @@ jobs:
           set -Eeuo pipefail
           for f in \
             "$ARMBIAN_CONFIG" \
-            scripts/download-sources.sh \
+            scripts/download-h3-v2-sources.sh \
             scripts/prepare-h3-v2-config.sh \
             scripts/audit-diretta-h3-v2.sh \
             scripts/package-h3.sh \
@@ -101,7 +102,7 @@ jobs:
             }
           done
 
-      - name: Download Linux source and Fedora 6.2.15 patch payload
+      - name: Download Linux source and Fedora SRPM from Release (fallback mirror enabled)
         shell: bash
         env:
           REPOSITORY_RAW_BASE: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}
