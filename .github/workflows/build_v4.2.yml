@@ -1,4 +1,4 @@
-name: Build Raspberry Pi 2/3 Kernel from Fedora 6.2.15 SRPM (V4.2)
+name: Build Raspberry Pi 2/3 Kernel from Fedora 6.2.15 source (V4.2 - Pi-only drivers)
 
 "on":
   workflow_dispatch:
@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   build:
-    name: Fedora 6.2.15 / Raspberry Pi 2+3 ARMv7 / Diretta (V4.2)
+    name: Linux 6.2.15 / Raspberry Pi 2+3 ARMv7 / Diretta (V4.2 - Pi-only drivers)
     runs-on: ubuntu-24.04
     timeout-minutes: 240
 
@@ -65,7 +65,6 @@ jobs:
           for f in \
             "$SUPPORT_DIR/kernel.spec" \
             "$SUPPORT_DIR/patch-6.2-redhat.patch" \
-            "$SUPPORT_DIR/kernel-armv7hl-fedora.config" \
             "$SUPPORT_DIR/SHA256SUMS" \
             "$ABI_FRAGMENT" \
             modules/diretta/alsa_bridge.ko \
@@ -137,11 +136,9 @@ jobs:
 
           SPEC="$(find .work/srpm-payload -name kernel.spec -type f -print -quit)"
           PATCH="$(find .work/srpm-payload -name patch-6.2-redhat.patch -type f -print -quit)"
-          CONFIG="$(find .work/srpm-payload -name kernel-armv7hl-fedora.config -type f -print -quit)"
-          test -n "$SPEC" && test -n "$PATCH" && test -n "$CONFIG"
+          test -n "$SPEC" && test -n "$PATCH"
           cmp "$SPEC" "$SUPPORT_DIR/kernel.spec"
           cmp "$PATCH" "$SUPPORT_DIR/patch-6.2-redhat.patch"
-          cmp "$CONFIG" "$SUPPORT_DIR/kernel-armv7hl-fedora.config"
           echo "SRPM payload matches the checked-in support files."
 
       - name: Extract Linux 6.2.15 source
@@ -199,142 +196,27 @@ jobs:
           } | tee .work/rpi-reference-info.txt
           echo "RPI_SRC=$RPI_SRC" >> "$GITHUB_ENV"
 
-      - name: Configure Fedora ARMv7 base plus official Pi 2/3 hardware
+      - name: Configure official Pi 2/3 base plus Diretta ABI
         shell: bash
         run: |
           set -Eeuo pipefail
           cd "$SRC"
 
-          echo "===== 1. Import Fedora ARMv7 baseline ====="
-          FEDORA_CONFIG="$GITHUB_WORKSPACE/$SUPPORT_DIR/kernel-armv7hl-fedora.config"
-          test -s "$FEDORA_CONFIG"
-          cp "$FEDORA_CONFIG" .config
+          echo "===== 1. Use official Raspberry Pi 2/3 ARMv7 defconfig as the base ====="
+          PI_CONFIG="$RPI_SRC/arch/arm/configs/bcm2709_defconfig"
+          test -s "$PI_CONFIG"
+          cp "$PI_CONFIG" .config
 
-          # Do not inherit a stale generated config from a prior build.
+          # Start clean: never inherit Fedora's generic ARMv7 hardware selections.
           rm -f include/config/auto.conf include/generated/autoconf.h
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 
-          echo "===== 2. Generate Pi hardware fragment from official bcm2709_defconfig ====="
-          python3 - "$RPI_SRC/arch/arm/configs/bcm2709_defconfig" \
-            "$SRC" "$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware.fragment" \
-            "$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware-audit.txt" <<'PY'
-          import re
-          import sys
-          from pathlib import Path
-
-          official = Path(sys.argv[1])
-          source = Path(sys.argv[2])
-          fragment = Path(sys.argv[3])
-          report = Path(sys.argv[4])
-
-          # These are Raspberry Pi 2/3 platform/peripheral drivers. Values are
-          # taken from the official bcm2709_defconfig, never guessed here.
-          # ABI, scheduler, filesystems and generic policy settings are excluded.
-          allow = {
-              "ARCH_BCM2835",
-              "MMC", "MMC_BLOCK", "MMC_SDHCI", "MMC_SDHCI_PLTFM",
-              "USB", "USB_DWC2", "USB_STORAGE", "USB_LAN78XX",
-              "USB_NET_SMSC95XX", "USB_USBNET",
-              "BRCMFMAC", "CFG80211", "MAC80211",
-              "I2C", "I2C_BCM2835", "I2C_CHARDEV",
-              "SPI", "SPI_BCM2835", "SPI_SPIDEV",
-              "GPIO_SYSFS", "GPIO_BCM_VIRT",
-              "SERIAL_AMBA_PL011", "SERIAL_AMBA_PL011_CONSOLE",
-              "RASPBERRYPI_FIRMWARE", "BCM2835_WDT", "BCM2835_THERMAL",
-              "DRM", "DRM_VC4", "FB_BCM2708", "BACKLIGHT_RPI",
-              "VIDEO_BCM2835_UNICAM", "VIDEO_IMX219", "VIDEO_OV5647",
-              "SND", "SND_SOC", "SND_BCM2835_SOC_I2S",
-              "SND_BCM2708_SOC_HIFIBERRY_DAC",
-              "SND_BCM2708_SOC_HIFIBERRY_DACPLUS",
-              "SND_BCM2708_SOC_HIFIBERRY_DIGI",
-              "SND_BCM2708_SOC_JUSTBOOM_DAC",
-              "SND_BCM2708_SOC_IQAUDIO_DAC",
-              "SND_BCM2708_SOC_RPI_DAC",
-              "CPU_FREQ", "CPUFREQ_DT", "ARM_RASPBERRYPI_CPUFREQ",
-              "MAILBOX", "BCM2835_MBOX", "DMA_BCM2835",
-          }
-
-          values = {}
-          for raw in official.read_text().splitlines():
-              line = raw.strip()
-              m = re.fullmatch(r"CONFIG_([A-Z0-9_]+)=(.*)", line)
-              if m:
-                  values[m.group(1)] = m.group(2)
-
-          # Build a declaration index from the actual Fedora 6.2.15 source.
-          declaration = re.compile(r"^\s*(?:menuconfig|config)\s+([A-Z0-9_]+)\b")
-          declared = set()
-          roots = ("arch", "block", "crypto", "drivers", "fs", "init",
-                   "kernel", "lib", "mm", "net", "security")
-          for root in roots:
-              base = source / root
-              if not base.exists():
-                  continue
-              for path in base.rglob("Kconfig*"):
-                  if not path.is_file():
-                      continue
-                  try:
-                      for line in path.read_text(errors="ignore").splitlines():
-                          match = declaration.match(line)
-                          if match:
-                              declared.add(match.group(1))
-                  except OSError:
-                      pass
-
-          kept, missing, not_set = [], [], []
-          for name in sorted(allow):
-              value = values.get(name)
-              if value not in ("y", "m"):
-                  not_set.append((name, value or "not selected in official defconfig"))
-                  continue
-              if name not in declared:
-                  missing.append((name, value))
-                  continue
-              kept.append(f"CONFIG_{name}={value}")
-
-          fragment.parent.mkdir(parents=True, exist_ok=True)
-          fragment.write_text(
-              "# Generated from official Raspberry Pi bcm2709_defconfig.\n"
-              "# Source reference is pinned by this workflow; only Pi hardware\n"
-              "# settings declared in Fedora Linux 6.2.15 are imported.\n"
-              "# Fedora ARMv7 config remains the base; ABI/scheduler settings\n"
-              "# are deliberately excluded.\n" + "\n".join(kept) + "\n"
-          )
-
-          lines = [
-              "Raspberry Pi hardware configuration import audit",
-              f"Official source: {official}",
-              f"Fedora source: {source}",
-              f"Allowed symbols: {len(allow)}",
-              f"Imported symbols: {len(kept)}",
-              "",
-              "[IMPORTED]",
-              *kept,
-              "",
-              "[NOT SELECTED IN OFFICIAL DEFCONFIG]",
-              *(f"{n}: {v}" for n, v in not_set),
-              "",
-              "[SELECTED OFFICIALLY BUT NOT DECLARED IN FEDORA 6.2.15]",
-              *(f"{n}={v}" for n, v in missing),
-          ]
-          report.write_text("\n".join(lines) + "\n")
-          print("\n".join(lines))
-          if not kept:
-              raise SystemExit("No Pi hardware symbols were imported.")
-          PY
-
-          HARDWARE_FRAGMENT="$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware.fragment"
-          test -s "$HARDWARE_FRAGMENT"
-
-          echo "===== 3. Merge Pi hardware fragment ====="
-          bash scripts/kconfig/merge_config.sh -m -r .config "$HARDWARE_FRAGMENT"
-
-          echo "===== 4. Merge Diretta/A20 ABI settings ====="
+          echo "===== 2. Merge the preserved Diretta/A20 ABI supplement ====="
           ABI_FRAGMENT="$GITHUB_WORKSPACE/$ABI_FRAGMENT"
           test -s "$ABI_FRAGMENT"
           bash scripts/kconfig/merge_config.sh -m -r .config "$ABI_FRAGMENT"
 
-          echo "===== 5. Enforce ABI and boot requirements ====="
+          echo "===== 3. Enforce ARMv7, Diretta vermagic and boot requirements ====="
           scripts/config --file .config \
             --set-str LOCALVERSION "" \
             --disable LOCALVERSION_AUTO \
@@ -368,91 +250,112 @@ jobs:
             --module SND_USB_AUDIO \
             --module SND_SOC
 
+          # Explicitly disable PC/server GPU drivers and optional network protocols.
+          for sym in \
+            DRM_AMDGPU DRM_RADEON DRM_MGAG200 DRM_NOUVEAU DRM_I915 \
+            DRM_AST DRM_BOCHS DRM_QXL DRM_VIRTIO_GPU DRM_VMWGFX \
+            DRM_GMA500 DRM_CIRRUS_QEMU DRM_VBOXVIDEO MPTCP MCTP; do
+            scripts/config --file .config --disable "$sym"
+          done
+
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
 
-          echo "===== 6. Validate final configuration ====="
+          echo "===== 4. Validate final configuration ====="
           require_config() {
             local expected="$1"
-            if ! grep -Fqx "$expected" .config; then
+            grep -Fqx "$expected" .config || {
               echo "::error::Required setting not retained: $expected"
               return 1
-            fi
+            }
             echo "OK: $expected"
           }
 
           for setting in \
-            CONFIG_ARCH_BCM2835=y \
-            CONFIG_CPU_V7=y \
-            CONFIG_CPU_32v7=y \
-            CONFIG_AEABI=y \
-            CONFIG_SMP=y \
-            CONFIG_PREEMPT=y \
-            CONFIG_MODULES=y \
-            CONFIG_MODULE_UNLOAD=y \
-            CONFIG_BLK_DEV_INITRD=y \
-            CONFIG_RD_GZIP=y \
-            CONFIG_DEVTMPFS=y \
-            CONFIG_DEVTMPFS_MOUNT=y \
-            CONFIG_MMC=y \
-            CONFIG_MMC_BLOCK=y \
-            CONFIG_USB=y \
-            CONFIG_SERIAL_AMBA_PL011=y \
-            CONFIG_SERIAL_AMBA_PL011_CONSOLE=y; do
+            CONFIG_ARCH_BCM2835=y CONFIG_CPU_V7=y CONFIG_CPU_32v7=y \
+            CONFIG_AEABI=y CONFIG_SMP=y CONFIG_PREEMPT=y \
+            CONFIG_MODULES=y CONFIG_MODULE_UNLOAD=y \
+            CONFIG_BLK_DEV_INITRD=y CONFIG_RD_GZIP=y \
+            CONFIG_DEVTMPFS=y CONFIG_DEVTMPFS_MOUNT=y \
+            CONFIG_MMC=y CONFIG_MMC_BLOCK=y CONFIG_USB=y \
+            CONFIG_SERIAL_AMBA_PL011=y CONFIG_SERIAL_AMBA_PL011_CONSOLE=y; do
             require_config "$setting"
           done
 
-          if grep -qx 'CONFIG_MODVERSIONS=y' .config; then
-            echo "::error::CONFIG_MODVERSIONS must be disabled for the original Diretta modules."
-            exit 1
-          fi
-          if grep -qx 'CONFIG_PREEMPT_RT=y' .config; then
-            echo "::error::PREEMPT_RT is not the expected Diretta baseline."
-            exit 1
-          fi
-          if grep -qx 'CONFIG_THUMB2_KERNEL=y' .config; then
-            echo "::error::THUMB2_KERNEL must be disabled for this ARMv7 vermagic target."
-            exit 1
-          fi
+          for sym in MODVERSIONS PREEMPT_RT THUMB2_KERNEL; do
+            if grep -qx "CONFIG_${sym}=y" .config; then
+              echo "::error::CONFIG_${sym} must be disabled for the target Diretta ABI."
+              exit 1
+            fi
+          done
 
-          # Ensure the key Pi 2/3 hardware choices survived Kconfig resolution.
-          # Optional devices are audited individually; absence is reported rather
-          # than treated as a reason to abort the entire kernel build.
-          python3 - "$HARDWARE_FRAGMENT" .config "$GITHUB_WORKSPACE/.work/rpi2-rpi3-final-audit.txt" <<'PY'
+          # Fail before compilation if unrelated desktop/server GPU drivers or
+          # optional MPTCP/MCTP protocols have re-entered the final config.
+          python3 - .config "$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware-audit.txt" <<'PY'
           import re
           import sys
           from pathlib import Path
-          fragment, config, report = map(Path, sys.argv[1:])
-          requested = {}
-          for line in fragment.read_text().splitlines():
-              m = re.fullmatch(r"CONFIG_([A-Z0-9_]+)=(y|m)", line.strip())
-              if m:
-                  requested[m.group(1)] = m.group(2)
-          actual = {}
+
+          config, report = map(Path, sys.argv[1:])
+          values = {}
           for line in config.read_text().splitlines():
               m = re.fullmatch(r"CONFIG_([A-Z0-9_]+)=(.*)", line.strip())
               if m:
-                  actual[m.group(1)] = m.group(2)
-          rows = []
-          for name, wanted in sorted(requested.items()):
-              got = actual.get(name, "n")
-              status = "OK" if got == wanted else "KCONFIG_ADJUSTED"
-              rows.append(f"{status}: CONFIG_{name}: requested={wanted}, final={got}")
+                  values[m.group(1)] = m.group(2)
+
+          forbidden = {
+              "DRM_AMDGPU", "DRM_RADEON", "DRM_MGAG200", "DRM_NOUVEAU",
+              "DRM_I915", "DRM_AST", "DRM_BOCHS", "DRM_QXL",
+              "DRM_VIRTIO_GPU", "DRM_VMWGFX", "DRM_GMA500",
+              "DRM_CIRRUS_QEMU", "DRM_VBOXVIDEO", "MPTCP", "MCTP",
+          }
+          enabled = [(n, values.get(n, "n")) for n in sorted(forbidden)
+                     if values.get(n, "n") in ("y", "m")]
+          prefixes = (
+              "BCM", "BRCM", "RASPBERRYPI", "MMC_", "USB_DWC2",
+              "USB_LAN78XX", "USB_NET_SMSC95XX", "I2C_BCM", "SPI_BCM",
+              "GPIO_BCM", "SERIAL_AMBA_PL011", "DRM_VC4", "FB_BCM2708",
+              "SND_BCM",
+          )
+          selected = sorted((n, v) for n, v in values.items()
+                            if v in ("y", "m") and n.startswith(prefixes))
+          rows = [
+              "RPi2/RPi3 final hardware configuration audit",
+              "Base: official downstream arch/arm/configs/bcm2709_defconfig",
+              "Fedora generic ARMv7 config: NOT USED",
+              "",
+              "[FORBIDDEN UNRELATED DRIVERS / PROTOCOLS]",
+              *(f"CONFIG_{n}={v}" for n, v in enabled),
+              "none" if not enabled else "ERROR",
+              "",
+              "[SELECTED PI-RELATED HARDWARE SYMBOLS]",
+              *(f"CONFIG_{n}={v}" for n, v in selected),
+          ]
+          report.parent.mkdir(parents=True, exist_ok=True)
           report.write_text("\n".join(rows) + "\n")
           print("\n".join(rows))
+          if enabled:
+              raise SystemExit("Unrelated GPU/protocol options remain enabled.")
+          if not selected:
+              raise SystemExit("No Raspberry Pi hardware symbols selected.")
           PY
 
-          # A20-specific settings are required only if the source Kconfig supports
-          # them and the preserved fragment requests them as enabled.
+          # Required boot hardware paths. USB_DWC2 is the Pi 2/3 USB host.
+          for sym in ARCH_BCM2835 MMC_BLOCK USB_DWC2 SERIAL_AMBA_PL011; do
+            grep -Eq "^CONFIG_${sym}=(y|m)$" .config || {
+              echo "::error::Missing required Pi hardware support: CONFIG_${sym}"
+              exit 1
+            }
+          done
+
           for sym in HARDENED_USERCOPY FORTIFY_SOURCE HIGHMEM; do
-            if grep -Eq "^CONFIG_${sym}=y$" "$GITHUB_WORKSPACE/$ABI_FRAGMENT"; then
+            if grep -Eq "^CONFIG_${sym}=y$" "$ABI_FRAGMENT"; then
               require_config "CONFIG_${sym}=y"
             fi
           done
 
-          # The Fedora config is expected to be an ARMv7 multi-platform config.
           grep -q '^CONFIG_ARCH_MULTI_V7=y$' .config || {
-            echo "::error::Fedora baseline is not configured for ARM multi_v7."
+            echo "::error::Official Pi base did not resolve to ARM multi_v7."
             exit 1
           }
           if grep -Eq '^CONFIG_ARCH_MULTI_V6=y$|^CONFIG_CPU_32v6=y$' .config; then
@@ -473,7 +376,6 @@ jobs:
             echo "::error::CONFIG_LOCALVERSION must be empty."
             exit 1
           }
-
           SETLOCALVERSION_OUTPUT="$(bash scripts/setlocalversion "$SRC")"
           [[ "$SETLOCALVERSION_OUTPUT" == "$LOCAL_SUFFIX" ]] || {
             echo "::error::setlocalversion mismatch: $SETLOCALVERSION_OUTPUT"
@@ -488,23 +390,22 @@ jobs:
 
           cp .config "$GITHUB_WORKSPACE/output-rpi2-rpi3-v4.2.config"
           cp localversion "$GITHUB_WORKSPACE/output-localversion"
-          echo "KERNEL_RELEASE=$ACTUAL_RELEASE" >> "$GITHUB_ENV"
 
           {
-            echo "=== Fedora ARMv7 baseline ==="
-            sha256sum "$GITHUB_WORKSPACE/$SUPPORT_DIR/kernel-armv7hl-fedora.config"
-            echo
-            echo "=== Raspberry Pi official reference ==="
+            echo "=== Official Raspberry Pi hardware baseline ==="
             cat "$GITHUB_WORKSPACE/.work/rpi-reference-info.txt"
             echo
             echo "=== Final platform / ABI configuration ==="
-            grep -E '^(CONFIG_(ARCH_BCM2835|ARCH_MULTI_V7|CPU_V7|CPU_32v7|SMP|PREEMPT|PREEMPT_RT|MODULES|MODULE_UNLOAD|MODVERSIONS|AEABI|MMC|MMC_BLOCK|MMC_BCM2835|USB_DWC2|USB_STORAGE|USB_LAN78XX|USB_NET_SMSC95XX|BRCMFMAC|I2C_BCM2835|SPI_BCM2835|SPI_SPIDEV|SERIAL_AMBA_PL011|SND|SND_PCM|SND_TIMER|SND_SOC|SND_USB_AUDIO))=' .config || true
+            grep -E '^(CONFIG_(ARCH_BCM2835|ARCH_MULTI_V7|CPU_V7|CPU_32v7|SMP|PREEMPT|PREEMPT_RT|MODULES|MODULE_UNLOAD|MODVERSIONS|AEABI|MMC|MMC_BLOCK|MMC_BCM2835|USB_DWC2|USB_STORAGE|USB_LAN78XX|USB_NET_SMSC95XX|BRCMFMAC|I2C_BCM2835|SPI_BCM2835|SPI_SPIDEV|SERIAL_AMBA_PL011|DRM_VC4|SND|SND_PCM|SND_TIMER|SND_SOC|SND_USB_AUDIO))=' .config || true
+            echo
+            echo "=== Unrelated-driver audit ==="
+            cat "$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware-audit.txt"
             echo
             echo "=== Final configuration checksum ==="
             sha256sum .config
           } | tee "$GITHUB_WORKSPACE/rpi2-rpi3-v4.2-config-report.txt"
 
-          echo "Kernel configuration passed: $ACTUAL_RELEASE"
+          echo "Kconfig passed: official Pi 2/3 base + Diretta ABI: $ACTUAL_RELEASE"
 
       - name: Diagnose ARM architecture and Diretta exports
         shell: bash
@@ -687,12 +588,8 @@ jobs:
           install -m 0644 "$SRC/.config" "$PKG/build-info/rpi2-rpi3.config"
           install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
           install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
-          install -m 0644 "$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware.fragment" \
-            "$PKG/build-info/rpi2-rpi3-hardware.fragment"
           install -m 0644 "$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware-audit.txt" \
-            "$PKG/build-info/rpi2-rpi3-hardware-import-audit.txt"
-          install -m 0644 "$GITHUB_WORKSPACE/.work/rpi2-rpi3-final-audit.txt" \
-            "$PKG/build-info/rpi2-rpi3-final-config-audit.txt"
+            "$PKG/build-info/rpi2-rpi3-hardware-audit.txt"
           cp .work/rpi-reference-info.txt "$PKG/build-info/"
           cp .work/srpm-identification.txt "$PKG/build-info/"
           cp diretta-compatibility-report.txt "$PKG/build-info/"
@@ -724,11 +621,11 @@ jobs:
             lib/modules/$KERNEL_RELEASE/
 
           Configuration design:
-            Fedora ARMv7 config is the base configuration.
-            Official Raspberry Pi bcm2709_defconfig supplies selected
-            hardware-driver settings supported by Fedora Linux 6.2.15.
-            The project A20 fragment preserves Diretta-related ABI/ALSA
-            settings. CONFIG_MODVERSIONS is disabled.
+            Official Raspberry Pi bcm2709_defconfig is the actual base .config.
+            Fedora generic ARMv7 config is not used.
+            The project A20 fragment adds preserved Diretta ABI/ALSA settings.
+            Unrelated AMD/Radeon/Matrox GPU drivers and MPTCP/MCTP are disabled
+            and audited before compilation. CONFIG_MODVERSIONS is disabled.
 
           IMPORTANT:
             This package is not a byte-for-byte reproduction of the SOtM A20 kernel.
@@ -758,8 +655,6 @@ jobs:
             output-localversion
             rpi2-rpi3-v4.2-config-report.txt
             diretta-compatibility-report.txt
-            .work/rpi2-rpi3-hardware.fragment
             .work/rpi2-rpi3-hardware-audit.txt
-            .work/rpi2-rpi3-final-audit.txt
             package/README.txt
             package/build-info/**
