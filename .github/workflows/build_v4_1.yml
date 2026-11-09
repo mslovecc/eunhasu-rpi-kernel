@@ -1,4 +1,4 @@
-name: Build Raspberry Pi 2 Kernel from Fedora 6.2.15 SRPM
+name: Build Raspberry Pi 2/3 Kernel from Fedora 6.2.15 SRPM (V4.1)
 
 on:
   workflow_dispatch:
@@ -19,12 +19,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: fedora-srpm-rpi2-kernel-${{ github.ref }}
+  group: fedora-srpm-rpi2-kernel-v4.1-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Fedora 6.2.15 / Raspberry Pi 2 / Diretta
+    name: Fedora 6.2.15 / Raspberry Pi 2+3 ARMv7 / Diretta (V4.1)
     runs-on: ubuntu-24.04
     timeout-minutes: 240
 
@@ -38,6 +38,7 @@ jobs:
 
       SUPPORT_DIR: "sources/kernel-srpm"
       ABI_FRAGMENT: "config/rpi2-a20-preserved.fragment"
+      HARDWARE_FRAGMENT: "config/rpi2-rpi3-hardware.fragment"
 
     steps:
 
@@ -104,6 +105,7 @@ jobs:
             "$SUPPORT_DIR/kernel-armv7hl-fedora.config" \
             "$SUPPORT_DIR/SHA256SUMS" \
             "$ABI_FRAGMENT" \
+            "$HARDWARE_FRAGMENT" \
             "modules/diretta/alsa_bridge.ko" \
             "modules/diretta/diretta_direct.ko"; do
 
@@ -182,7 +184,7 @@ jobs:
 
           mkdir -p .work/downloads
 
-          BASE_URL="https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15"
+          BASE_URL="https://s2.bravo123.top"
 
           curl -fL --retry 5 --retry-all-errors \
             "$BASE_URL/$SRPM_NAME" \
@@ -348,7 +350,7 @@ jobs:
       # 8. Configure Raspberry Pi 2
       # --------------------------------------------------
 
-      - name: Configure Raspberry Pi 2 kernel (v3)
+      - name: Configure Raspberry Pi 2/3 kernel (V4.1 baseline)
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -403,13 +405,31 @@ jobs:
             "$GITHUB_WORKSPACE/$ABI_FRAGMENT"
 
           # ----------------------------------------------
+          # 8.3 Import Raspberry Pi 2B/3B hardware drivers
+          # Extracted from the official Raspberry Pi
+          # bcm2709_defconfig (rpi-6.1.y), without importing
+          # its unrelated ABI, scheduler, filesystem or
+          # general-purpose configuration.
+          # ----------------------------------------------
+
+          test -s "$GITHUB_WORKSPACE/$HARDWARE_FRAGMENT"
+
+          bash scripts/kconfig/merge_config.sh \
+            -m -r \
+            .config \
+            "$GITHUB_WORKSPACE/$HARDWARE_FRAGMENT"
+
+          # ----------------------------------------------
           # 8.4 Configure kernel options
           # ----------------------------------------------
 
           scripts/config --file .config \
             --set-str LOCALVERSION "" \
             --disable LOCALVERSION_AUTO \
+            --disable ARCH_MULTI_V6 \
             --enable ARCH_MULTI_V7 \
+            --disable CPU_32v6 \
+            --enable CPU_32v7 \
             --enable ARCH_BCM2835 \
             --enable CPU_V7 \
             --enable AEABI \
@@ -421,6 +441,8 @@ jobs:
             --disable PREEMPT_RT \
             --disable THUMB2_KERNEL \
             --enable BLK_DEV_INITRD \
+            --enable RD_GZIP \
+            --enable MODULE_COMPRESS_XZ \
             --enable DEVTMPFS \
             --enable DEVTMPFS_MOUNT \
             --enable MMC \
@@ -452,6 +474,108 @@ jobs:
           make ARCH=arm \
             CROSS_COMPILE="$CROSS_COMPILE" \
             syncconfig
+
+          echo
+          echo "===== Raspberry Pi 2B/3B hardware driver validation ====="
+
+          for sym in \
+            CONFIG_USB_DWCOTG=y \
+            CONFIG_USB_DWC2=y \
+            CONFIG_USB_STORAGE=y \
+            CONFIG_USB_LAN78XX=y \
+            CONFIG_USB_NET_SMSC95XX=y \
+            CONFIG_RASPBERRYPI_GPIOMEM=m \
+            CONFIG_SPI_SPIDEV=m \
+            CONFIG_FB_BCM2708=y \
+            CONFIG_BACKLIGHT_RPI=m \
+            CONFIG_SENSORS_RASPBERRYPI_HWMON=m \
+            CONFIG_RPI_POE_POWER=m \
+            CONFIG_MFD_RASPBERRYPI_POE_HAT=m \
+            CONFIG_VIDEO_BCM2835_UNICAM=m \
+            CONFIG_VIDEO_IMX219=m \
+            CONFIG_VIDEO_OV5647=m \
+            CONFIG_SND_BCM2708_SOC_HIFIBERRY_DAC=m \
+            CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUS=m \
+            CONFIG_SND_BCM2708_SOC_HIFIBERRY_DIGI=m \
+            CONFIG_SND_BCM2708_SOC_JUSTBOOM_DAC=m \
+            CONFIG_SND_BCM2708_SOC_IQAUDIO_DAC=m \
+            CONFIG_SND_BCM2708_SOC_RPI_DAC=m; do
+            grep -qx "$sym" .config || {
+              echo "::error::Raspberry Pi hardware setting missing after olddefconfig: $sym"
+              exit 1
+            }
+            echo "OK: $sym"
+          done
+
+          # These settings are ABI-critical and must never be imported
+          # from the upstream bcm2709_defconfig.
+          if grep -qx 'CONFIG_MODVERSIONS=y' .config; then
+            echo "::error::CONFIG_MODVERSIONS must remain disabled for original Diretta modules."
+            exit 1
+          fi
+
+          echo
+          echo "===== Raspberry Pi 2 boot-critical configuration ====="
+
+          for sym in \
+            CONFIG_MMC=y \
+            CONFIG_MMC_BLOCK=y \
+            CONFIG_MMC_BCM2835=y \
+            CONFIG_BLK_DEV_INITRD=y \
+            CONFIG_RD_GZIP=y \
+            CONFIG_MODULE_COMPRESS_XZ=y; do
+
+            if ! grep -qx "$sym" .config; then
+              echo "::error::Required boot/module configuration missing: $sym"
+              exit 1
+            fi
+
+            echo "OK: $sym"
+          done
+
+          echo
+          echo "===== A20 required configuration validation ====="
+
+            for sym in \
+              CONFIG_HARDENED_USERCOPY \
+              CONFIG_FORTIFY_SOURCE \
+              CONFIG_HIGHMEM; do
+
+              if ! grep -qx "${sym}=y" .config; then
+                echo "::error::Required A20 configuration missing: $sym"
+                exit 1
+              fi
+
+              echo "OK: ${sym}=y"
+            done
+            
+          # ----------------------------------------------
+          # 8.5.1 Enforce ARMv7-only configuration
+          # ----------------------------------------------
+
+          echo
+          echo "[ARMv7 configuration validation]"
+
+          grep -E \
+            '^(CONFIG_ARCH_MULTI_V[0-9]+|CONFIG_CPU_32v[0-9]+|CONFIG_CPU_V[0-9]+)=' \
+            .config || true
+
+          if ! grep -qx 'CONFIG_ARCH_MULTI_V7=y' .config; then
+            echo "::error::CONFIG_ARCH_MULTI_V7 is not enabled."
+            exit 1
+          fi
+
+          if ! grep -qx 'CONFIG_CPU_32v7=y' .config; then
+            echo "::error::CONFIG_CPU_32v7 is not enabled."
+            exit 1
+          fi
+
+          if grep -qE '^(CONFIG_ARCH_MULTI_V6|CONFIG_CPU_32v6)=' .config; then
+            echo "::error::ARMv6 configuration is still enabled."
+            exit 1
+          fi
+
+          echo "ARMv7-only configuration passed."
 
           # ----------------------------------------------
           # 8.6 Set localversion file
@@ -544,7 +668,7 @@ jobs:
           # 8.11 Save configuration
           # ----------------------------------------------
 
-          cp .config "$GITHUB_WORKSPACE/output-rpi2.config"
+          cp .config "$GITHUB_WORKSPACE/output-rpi2-rpi3-v4.1.config"
 
           cp localversion \
             "$GITHUB_WORKSPACE/output-localversion"
@@ -651,6 +775,81 @@ jobs:
           test -s "$SRC/Module.symvers"
           test -s "$SRC/System.map"
 
+          # MMC_BCM2835 is the BCM2835 SDHOST controller driver (not SDHCI).
+          # Require it to be built into the kernel for reliable SD-card boot.
+          grep -qx 'CONFIG_MMC_BCM2835=y' "$SRC/.config"
+          grep -Fqx 'kernel/drivers/mmc/host/bcm2835.ko' "$SRC/modules.builtin"
+
+          echo "BCM2835 SDHOST is built into the kernel."
+
+      - name: Diagnose missing Diretta kernel symbols
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          cd "$SRC"
+
+          echo "===== 1. Relevant kernel configuration ====="
+          grep -E '^(CONFIG_(HARDENED_USERCOPY|FORTIFY_SOURCE|HIGHMEM|HIGHMEM4G|ARM_LPAE|ARCH_BCM2835|MODULES))=' .config || true
+
+          echo
+          echo "===== 2. Missing symbols in Module.symvers ====="
+          for sym in __check_object_size fortify_panic page_address; do
+            echo "--- $sym ---"
+            grep -w "$sym" Module.symvers || echo "NOT FOUND"
+          done
+
+          echo
+          echo "===== 3. Symbol definitions in kernel source ====="
+          grep -R -n -E \
+            '(__check_object_size|fortify_panic|page_address)' \
+            mm include arch/arm \
+            --include='*.c' --include='*.h' \
+            | head -n 100 || true
+
+          echo
+          echo "===== 4. Export declarations ====="
+          grep -R -n -E \
+            'EXPORT_SYMBOL(_GPL)?\((__check_object_size|fortify_panic|page_address)\)' \
+            mm arch/arm \
+            --include='*.c' || true
+
+          echo
+          echo "===== 5. Built kernel symbols ====="
+          if [[ -f vmlinux ]]; then
+            nm -A vmlinux 2>/dev/null \
+              | grep -E '(__check_object_size|fortify_panic|page_address)$' \
+              || true
+          else
+            echo "vmlinux not found"
+          fi
+
+          echo
+          echo "===== 6. Module.symvers metadata ====="
+          ls -lh Module.symvers vmlinux 2>/dev/null || true
+
+          echo
+          echo "===== FORTIFY implementation ====="
+
+          grep -R -n -E \
+            'fortify_panic|__fortify_panic|EXPORT_SYMBOL.*fortify' \
+            lib include mm \
+            --include='*.c' --include='*.h' || true
+
+          echo
+          echo "===== HARDENED_USERCOPY implementation ====="
+
+          grep -n -E \
+            'HARDENED_USERCOPY|__check_object_size|EXPORT_SYMBOL' \
+            mm/usercopy.c || true
+
+          echo
+          echo "===== HIGHMEM implementation ====="
+
+          grep -n -E \
+            'CONFIG_HIGHMEM|page_address|EXPORT_SYMBOL' \
+            mm/highmem.c || true
+
       # --------------------------------------------------
       # 10. Verify vermagic and symbol coverage
       # --------------------------------------------------
@@ -682,6 +881,27 @@ jobs:
             echo "::error::Built kernel module vermagic mismatch."
             exit 1
           fi
+
+          echo
+          echo "===== A20 required kernel exports validation ====="
+
+          for sym in \
+            __check_object_size \
+            fortify_panic \
+            page_address; do
+
+            if ! awk -v s="$sym" \
+              '$2 == s {found=1} END {exit !found}' \
+              "$SRC/Module.symvers"; then
+
+              echo "::error::Missing required A20 export: $sym"
+              exit 1
+            fi
+
+            echo "OK: $sym"
+          done
+
+          echo "All required A20 kernel exports are present."
 
           REPORT="$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
 
@@ -804,6 +1024,72 @@ jobs:
 
           depmod -b "$PKG" "$KERNEL_RELEASE"
 
+          # Build a module-only initramfs matching this exact kernel release.
+          # modules_install uses CONFIG_MODULE_COMPRESS_XZ to create .ko.xz.
+          # The complete newc CPIO is then gzip-compressed for firmware loading.
+          INITRD_ROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
+          INITRD_CPIO="$GITHUB_WORKSPACE/.work/initramfs7.cpio"
+
+          rm -rf "$INITRD_ROOT"
+          install -d "$INITRD_ROOT/usr/lib/modules"
+
+          cp -a "$PKG/lib/modules/$KERNEL_RELEASE" \
+            "$INITRD_ROOT/usr/lib/modules/"
+
+          MODULE_DIR="$PKG/lib/modules/$KERNEL_RELEASE"
+          XZ_MODULE_COUNT="$(find "$MODULE_DIR" -type f -name '*.ko.xz' | wc -l)"
+          PLAIN_MODULE_COUNT="$(find "$MODULE_DIR" -type f -name '*.ko' | wc -l)"
+
+          if [[ "$XZ_MODULE_COUNT" -eq 0 || "$PLAIN_MODULE_COUNT" -ne 0 ]]; then
+            echo "::error::Expected XZ-compressed modules only; .ko.xz=$XZ_MODULE_COUNT, plain .ko=$PLAIN_MODULE_COUNT"
+            exit 1
+          fi
+
+          echo "XZ-compressed kernel modules: $XZ_MODULE_COUNT"
+
+          (
+            cd "$INITRD_ROOT"
+            find . -print0 | LC_ALL=C sort -z \
+              | cpio --null --create --format=newc --owner=0:0
+          ) > "$INITRD_CPIO"
+
+          test -s "$INITRD_CPIO"
+
+          # gzip -n removes timestamps and original filename for reproducibility.
+          gzip -9 -n -c "$INITRD_CPIO" > "$PKG/boot/initramfs7"
+          test -s "$PKG/boot/initramfs7"
+
+          # Validate the outer compression and the inner CPIO archive.
+          gzip -t "$PKG/boot/initramfs7"
+          gzip -dc "$PKG/boot/initramfs7" \
+            | cpio -it --quiet \
+            > "$PKG/build-info/initramfs7.contents.txt"
+
+          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" \
+            "$PKG/build-info/initramfs7.contents.txt"
+
+          if grep -Eq '(^|/)init$|6\.18\.34\+rpt-rpi-v7' \
+            "$PKG/build-info/initramfs7.contents.txt"; then
+            echo "::error::Unexpected init or old-kernel module path in initramfs7."
+            exit 1
+          fi
+
+          # Confirm the initramfs itself contains compressed modules.
+          grep -Eq "usr/lib/modules/$KERNEL_RELEASE/.+\.ko\.xz$" \
+            "$PKG/build-info/initramfs7.contents.txt"
+
+          echo
+          echo "===== Initramfs compression report ====="
+          file "$INITRD_CPIO" "$PKG/boot/initramfs7"
+          ls -lh "$INITRD_CPIO" "$PKG/boot/initramfs7"
+
+          (
+            cd "$PKG/boot"
+            sha256sum initramfs7
+          ) | tee "$PKG/build-info/initramfs7.sha256"
+
+          rm -f "$INITRD_CPIO"
+
           # Build information
 
           install -m 0644 "$SRC/.config" \
@@ -814,6 +1100,8 @@ jobs:
 
           install -m 0644 "$SRC/Module.symvers" \
             "$PKG/build-info/Module.symvers"
+          install -m 0644 "$GITHUB_WORKSPACE/$HARDWARE_FRAGMENT" \
+            "$PKG/build-info/rpi2-rpi3-hardware.fragment"
 
           cp .work/srpm-identification.txt \
             "$PKG/build-info/"
@@ -838,6 +1126,10 @@ jobs:
 
           Device tree:
           boot/bcm2836-rpi-2-b.dtb
+
+          Initramfs:
+          boot/initramfs7 (gzip-compressed newc CPIO, modules only)
+          Kernel modules inside initramfs are XZ-compressed (.ko.xz).
 
           Kernel modules:
           lib/modules/$KERNEL_RELEASE/
@@ -885,8 +1177,9 @@ jobs:
           path: |
             rpi2-kernel-${{ env.KERNEL_RELEASE }}.tar.gz
             rpi2-kernel-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
-            output-rpi2.config
+            output-rpi2-rpi3-v4.1.config
             output-localversion
+            config/rpi2-rpi3-hardware.fragment
             diretta-compatibility-report.txt
             package/README.txt
             package/build-info/**
