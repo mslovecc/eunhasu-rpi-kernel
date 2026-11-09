@@ -319,7 +319,11 @@ jobs:
           for opt in BLKID SWITCH_ROOT MOUNT UMOUNT SLEEP MDEV; do
             sed -i "s/^# CONFIG_${opt} is not set/CONFIG_${opt}=y/" .config
           done
-          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
+          # BusyBox 1.36.1 does not provide the Linux-kernel-only
+          # olddefconfig target. Use BusyBox's supported oldconfig target and
+          # feed EOF so every newly introduced option takes its Kconfig default.
+          # This keeps the GitHub Actions build fully non-interactive.
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- oldconfig </dev/null
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j"$(nproc)"
           install -m 0755 busybox "$root/bin/busybox"
           arm-linux-gnueabihf-readelf -h "$root/bin/busybox" | grep -q 'Class:.*ELF32'
