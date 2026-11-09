@@ -38,6 +38,7 @@ jobs:
 
       SUPPORT_DIR: "sources/kernel-srpm"
       ABI_FRAGMENT: "config/rpi2-a20-preserved.fragment"
+      HARDWARE_FRAGMENT: "config/rpi2-rpi3-hardware.fragment"
 
     steps:
 
@@ -104,6 +105,7 @@ jobs:
             "$SUPPORT_DIR/kernel-armv7hl-fedora.config" \
             "$SUPPORT_DIR/SHA256SUMS" \
             "$ABI_FRAGMENT" \
+            "$HARDWARE_FRAGMENT" \
             "modules/diretta/alsa_bridge.ko" \
             "modules/diretta/diretta_direct.ko"; do
 
@@ -410,7 +412,6 @@ jobs:
           # general-purpose configuration.
           # ----------------------------------------------
 
-          HARDWARE_FRAGMENT="config/rpi2-rpi3-hardware.fragment"
           test -s "$GITHUB_WORKSPACE/$HARDWARE_FRAGMENT"
 
           bash scripts/kconfig/merge_config.sh \
@@ -1099,6 +1100,8 @@ jobs:
 
           install -m 0644 "$SRC/Module.symvers" \
             "$PKG/build-info/Module.symvers"
+          install -m 0644 "$GITHUB_WORKSPACE/$HARDWARE_FRAGMENT" \
+            "$PKG/build-info/rpi2-rpi3-hardware.fragment"
 
           cp .work/srpm-identification.txt \
             "$PKG/build-info/"
@@ -1176,6 +1179,7 @@ jobs:
             rpi2-kernel-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
             output-rpi2-rpi3-v4.1.config
             output-localversion
+            config/rpi2-rpi3-hardware.fragment
             diretta-compatibility-report.txt
             package/README.txt
             package/build-info/**
