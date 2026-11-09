@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   build:
-    name: Linux 6.2.15 / Orange Pi PC / H3 / Original Diretta KO
+    name: Linux 6.2.15 / Orange Pi PC / H3 sunxi_defconfig / Original Diretta KO
     runs-on: ubuntu-24.04
     timeout-minutes: 240
 
@@ -74,7 +74,6 @@ jobs:
             config/h3-diretta.fragment \
             "$SUPPORT_DIR/kernel.spec" \
             "$SUPPORT_DIR/patch-6.2-redhat.patch" \
-            "$SUPPORT_DIR/kernel-armv7hl-fedora.config" \
             "$SUPPORT_DIR/Makefile.rhelver" \
             "$SUPPORT_DIR/SHA256SUMS" \
             modules/diretta/alsa_bridge.ko \
@@ -104,7 +103,7 @@ jobs:
           test -x scripts/verify-diretta-abi.sh
           test -x scripts/package-h3.sh
 
-      - name: Download Fedora SRPM and Linux source (repository first, fallback second)
+      - name: Download Linux source and Fedora 6.2.15 patch payload
         shell: bash
         env:
           REPOSITORY_RAW_BASE: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}
@@ -114,7 +113,7 @@ jobs:
           export REPOSITORY_RAW_BASE
           bash scripts/download-sources.sh
 
-      - name: Extract and verify Fedora SRPM payload
+      - name: Extract and verify Fedora patch payload (configuration is NOT used)
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -126,23 +125,21 @@ jobs:
 
           SPEC="$(find .work/srpm-payload -type f -name kernel.spec -print -quit)"
           PATCH="$(find .work/srpm-payload -type f -name patch-6.2-redhat.patch -print -quit)"
-          CONFIG="$(find .work/srpm-payload -type f -name kernel-armv7hl-fedora.config -print -quit)"
           RHELVER="$(find .work/srpm-payload -type f -name Makefile.rhelver -print -quit)"
 
-          for f in "$SPEC" "$PATCH" "$CONFIG" "$RHELVER"; do
+          for f in "$SPEC" "$PATCH" "$RHELVER"; do
             test -s "$f" || { echo "::error::Missing SRPM payload file: $f"; exit 1; }
           done
 
           cmp "$SPEC" "$SUPPORT_DIR/kernel.spec"
           cmp "$PATCH" "$SUPPORT_DIR/patch-6.2-redhat.patch"
-          cmp "$CONFIG" "$SUPPORT_DIR/kernel-armv7hl-fedora.config"
           cmp "$RHELVER" "$SUPPORT_DIR/Makefile.rhelver"
 
           rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE}\n' ".work/downloads/$SRPM_NAME" \
             | tee .work/srpm-identification.txt
           grep -qx 'kernel 6.2.15-100.fc36' .work/srpm-identification.txt
 
-      - name: Extract Linux source and apply Fedora patch
+      - name: Extract Linux source and apply Fedora 6.2.15 patch
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -150,6 +147,7 @@ jobs:
           tar -xJf ".work/downloads/$SOURCE_TARBALL" -C .work/source
           SRC="$GITHUB_WORKSPACE/.work/source/linux-6.2.15"
           test -s "$SRC/Makefile"
+          test -s "$SRC/arch/arm/configs/sunxi_defconfig"
           test -s "$SRC/arch/arm/boot/dts/sun8i-h3-orangepi-pc.dts"
           test -s "$SRC/arch/arm/boot/dts/sun8i-h3.dtsi"
 
@@ -167,7 +165,7 @@ jobs:
 
           echo "SRC=$SRC" >> "$GITHUB_ENV"
 
-      - name: Prepare Fedora ARMv7 + Orange Pi PC + Diretta config
+      - name: Prepare upstream sunxi_defconfig + Orange Pi PC H3 + Diretta config
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -208,7 +206,6 @@ jobs:
           bash scripts/package-h3.sh "$SRC" "$KERNEL_RELEASE"
           bash scripts/verify-diretta-abi.sh "$SRC" "$GITHUB_WORKSPACE/package-orangepi-pc"
 
-          # Include the ABI report in the final package archive.
           install -m 0644 diretta-h3-compatibility-report.txt \
             package-orangepi-pc/build-info/diretta-compatibility-report.txt
           rm -f package-orangepi-pc/SHA256SUMS
