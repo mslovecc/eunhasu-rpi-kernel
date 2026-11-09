@@ -228,9 +228,10 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          test -f scripts/configure-rpi2-rpi3.sh
+          test -s scripts/configure-rpi2-rpi3.sh
           chmod +x scripts/configure-rpi2-rpi3.sh
           test -x scripts/configure-rpi2-rpi3.sh
+          bash -n scripts/configure-rpi2-rpi3.sh
           bash scripts/configure-rpi2-rpi3.sh
 
       - name: Diagnose ARM architecture and Diretta exports
