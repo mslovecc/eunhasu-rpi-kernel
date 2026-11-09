@@ -129,7 +129,7 @@ jobs:
             exit 1
           }
 
-          for sym in CONFIG_CPU_V7 CONFIG_NEON CONFIG_USB CONFIG_USB_USBNET CONFIG_USB_NET_SMSC95XX CONFIG_MMC_BCM2835; do
+          for sym in CONFIG_CPU_V7 CONFIG_NEON CONFIG_BLK_DEV_INITRD CONFIG_RD_GZIP CONFIG_USB CONFIG_USB_USBNET CONFIG_USB_NET_SMSC95XX CONFIG_MMC_BCM2835 CONFIG_EXT4_FS; do
             grep -Eq "^$sym=(y|m)$" .config || {
               echo "::error::Required config missing: $sym"
               exit 1
@@ -185,12 +185,111 @@ jobs:
           # Preserve exact original module bytes in the package.
           sha256sum "$GITHUB_WORKSPACE"/modules/diretta/*.ko
 
+      - name: Build ARMv7 initramfs for PARTUUID-based root boot
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          work="$GITHUB_WORKSPACE/.work/initramfs"
+          root="$work/root"
+          mkdir -p "$root"/{bin,dev,proc,sys,newroot}
+
+          # Build a small, statically linked ARMv7 BusyBox so the initramfs
+          # does not accidentally contain x86_64 host executables.
+          git clone --depth 1 --branch 1_36_1 https://git.busybox.net/busybox "$work/busybox"
+          cd "$work/busybox"
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
+          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          sed -i 's/^CONFIG_FEATURE_SH_STANDALONE=y/# CONFIG_FEATURE_SH_STANDALONE is not set/' .config || true
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- olddefconfig
+          make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j"$(nproc)"
+          install -m 0755 busybox "$root/bin/busybox"
+          "$CROSS_COMPILE"readelf -h "$root/bin/busybox" | grep -q 'Class:.*ELF32'
+          "$CROSS_COMPILE"readelf -h "$root/bin/busybox" | grep -q 'Machine:.*ARM'
+
+          for app in sh mount umount mkdir sleep mdev switch_root; do
+            ln -sf busybox "$root/bin/$app"
+          done
+
+          cat > "$root/init" <<'INIT'
+          #!/bin/sh
+          export PATH=/bin
+          mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
+          mount -t proc proc /proc
+          mount -t sysfs sysfs /sys
+          echo "initramfs: locating root filesystem..."
+          CMDLINE="$(cat /proc/cmdline)"
+          ROOT=""
+          ROOTFS="ext4"
+          ROOTWAIT=30
+          for arg in $CMDLINE; do
+            case "$arg" in
+              root=*) ROOT="${arg#root=}" ;;
+              rootfstype=*) ROOTFS="${arg#rootfstype=}" ;;
+              rootwait) ROOTWAIT=120 ;;
+            esac
+          done
+          case "$ROOT" in
+            PARTUUID=*)
+              wanted="${ROOT#PARTUUID=}"
+              elapsed=0
+              while [ "$elapsed" -lt "$ROOTWAIT" ]; do
+                for sysdev in /sys/class/block/*; do
+                  [ -f "$sysdev/uevent" ] || continue
+                  partuuid="$(sed -n 's/^PARTUUID=//p' "$sysdev/uevent")"
+                  if [ -n "$partuuid" ] && [ "${partuuid,,}" = "${wanted,,}" ]; then
+                    dev="/dev/${sysdev##*/}"
+                    break 2
+                  fi
+                done
+                sleep 1
+                elapsed=$((elapsed + 1))
+              done
+              ;;
+            UUID=*)
+              wanted="${ROOT#UUID=}"
+              elapsed=0
+              while [ "$elapsed" -lt "$ROOTWAIT" ]; do
+                for sysdev in /sys/class/block/*; do
+                  [ -f "$sysdev/uevent" ] || continue
+                  uuid="$(sed -n 's/^PARTUUID=//p' "$sysdev/uevent")"
+                  [ -n "$uuid" ] && [ "${uuid,,}" = "${wanted,,}" ] && dev="/dev/${sysdev##*/}" && break 2
+                done
+                sleep 1
+                elapsed=$((elapsed + 1))
+              done
+              ;;
+            /dev/*) dev="$ROOT" ;;
+          esac
+          if [ -z "$dev" ] || [ ! -b "$dev" ]; then
+            echo "initramfs: cannot resolve root=$ROOT"
+            exec sh
+          fi
+          mkdir -p /newroot
+          if ! mount -t "$ROOTFS" -o rw "$dev" /newroot; then
+            echo "initramfs: failed to mount $dev as $ROOTFS"
+            exec sh
+          fi
+          [ -x /newroot/sbin/init ] || [ -x /newroot/lib/systemd/systemd ] || {
+            echo "initramfs: mounted root has no init"
+            exec sh
+          }
+          exec switch_root /newroot /sbin/init
+          INIT
+          chmod 0755 "$root/init"
+
+          # Device nodes are created dynamically by devtmpfs; keep the
+          # archive independent of host device-node permissions.
+          (cd "$root" && find . -print0 | cpio --null -o -H newc --owner=0:0 | gzip -9) > "$GITHUB_WORKSPACE/package-initramfs7"
+          test -s "$GITHUB_WORKSPACE/package-initramfs7"
+          file "$GITHUB_WORKSPACE/package-initramfs7"
+
       - name: Install and package kernel modules
         shell: bash
         run: |
           set -Eeuo pipefail
           pkg="$GITHUB_WORKSPACE/package"
           mkdir -p "$pkg/boot/overlays" "$pkg/lib/modules" "$pkg/modules/diretta" "$pkg/build-info"
+          install -m 0644 "$GITHUB_WORKSPACE/package-initramfs7" "$pkg/boot/initramfs7"
 
           install -m 0644 .work/linux/arch/arm/boot/zImage "$pkg/boot/kernel7.img"
 
@@ -220,6 +319,7 @@ jobs:
           Source commit: $RPI_SOURCE_COMMIT
           Config: bcm2709_defconfig
           Kernel image: boot/kernel7.img
+          Initramfs: boot/initramfs7 (ARMv7 static BusyBox; PARTUUID/UUID/device root support)
           Device trees: boot/*.dtb
           Overlays: boot/overlays/
           Modules: lib/modules/$KERNEL_RELEASE/
@@ -241,4 +341,7 @@ jobs:
             rpi-armv7-diretta-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
             rpi-armv7-v5.config
             package/README.txt
+            package/boot/initramfs7
+            package/boot/*.dtb
+            package/boot/overlays/**
             package/build-info/**
