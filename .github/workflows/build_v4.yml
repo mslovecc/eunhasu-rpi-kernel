@@ -1052,10 +1052,10 @@ jobs:
           INITRD_CPIO="$GITHUB_WORKSPACE/.work/initramfs7.cpio"
 
           rm -rf "$INITRD_ROOT"
-          install -d "$INITRD_ROOT/usr/lib/modules"
+          install -d "$INITRD_ROOT/lib/modules"
 
           cp -a "$PKG/lib/modules/$KERNEL_RELEASE" \
-            "$INITRD_ROOT/usr/lib/modules/"
+            "$INITRD_ROOT/lib/modules/"
 
           MODULE_DIR="$PKG/lib/modules/$KERNEL_RELEASE"
           XZ_MODULE_COUNT="$(find "$MODULE_DIR" -type f -name '*.ko.xz' | wc -l)"
@@ -1108,7 +1108,7 @@ jobs:
             | cpio -it --quiet \
             > "$PKG/build-info/initramfs7.contents.txt"
 
-          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" \
+          grep -Fq "lib/modules/$KERNEL_RELEASE/" \
             "$PKG/build-info/initramfs7.contents.txt"
 
           if grep -Eq '(^|/)(init|sbin/init|bin/sh|bash|systemd)$' \
@@ -1124,7 +1124,7 @@ jobs:
           fi
 
           # Confirm the initramfs itself contains compressed modules.
-          grep -Eq "usr/lib/modules/$KERNEL_RELEASE/.+\\.ko\\.xz$" \
+          grep -Eq "lib/modules/$KERNEL_RELEASE/.+\\.ko\\.xz$" \
             "$PKG/build-info/initramfs7.contents.txt"
 
           echo
