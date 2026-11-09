@@ -281,6 +281,33 @@ def prune(rel, sym):
     if sym in keep:
         return False
 
+    # Root Kconfig files mix generic frameworks with SoC controllers.
+    # Keep the generic core plus the BCM2835/Pi-specific implementations.
+    root_allow = {
+        "drivers/clk/Kconfig": {"COMMON_CLK", "CLKDEV_LOOKUP", "CLK_BCM2835", "CLK_RASPBERRYPI"},
+        "drivers/pinctrl/Kconfig": {"PINCTRL", "PINCTRL_BCM2835"},
+        "drivers/gpio/Kconfig": {"GPIOLIB", "GPIO_SYSFS", "GPIO_CDEV", "GPIO_CDEV_V1", "GPIO_RASPBERRYPI_EXP", "GPIO_BCM2835"},
+        "drivers/i2c/busses/Kconfig": {"I2C_BCM2835"},
+        "drivers/spi/Kconfig": {"SPI_BCM2835", "SPI_BCM2835AUX", "SPI_SPIDEV"},
+        "drivers/mmc/host/Kconfig": {"MMC_BCM2835"},
+        "drivers/tty/serial/Kconfig": {"SERIAL_CORE", "SERIAL_AMBA_PL011", "SERIAL_AMBA_PL011_CONSOLE", "SERIAL_8250", "SERIAL_8250_CONSOLE", "SERIAL_8250_BCM2835AUX"},
+        "drivers/thermal/Kconfig": {"THERMAL", "THERMAL_OF", "THERMAL_HWMON", "THERMAL_DEFAULT_GOV_STEP_WISE", "THERMAL_GOV_STEP_WISE", "BCM2835_THERMAL"},
+        "drivers/watchdog/Kconfig": {"WATCHDOG", "WATCHDOG_CORE", "WATCHDOG_HANDLE_BOOT_ENABLED", "BCM2835_WDT"},
+        "drivers/pwm/Kconfig": {"PWM", "PWM_SYSFS", "PWM_BCM2835", "PWM_RASPBERRYPI_POE"},
+        "drivers/mailbox/Kconfig": {"MAILBOX", "BCM2835_MBOX"},
+        "drivers/dma/Kconfig": {"DMADEVICES", "DMA_ENGINE", "DMA_BCM2835"},
+    }
+    if rel in root_allow:
+        return sym not in root_allow[rel]
+
+    # Retain BCM clock/pinctrl and the BCM2835 auxiliary UART only.
+    if rel.startswith("drivers/clk/"):
+        return not (rel.startswith("drivers/clk/bcm/") and sym in {"CLK_BCM2835", "CLK_RASPBERRYPI"})
+    if rel.startswith("drivers/pinctrl/"):
+        return not (rel.startswith("drivers/pinctrl/bcm/") and sym == "PINCTRL_BCM2835")
+    if rel.startswith("drivers/tty/serial/"):
+        return not (rel.startswith("drivers/tty/serial/8250/") and sym == "SERIAL_8250_BCM2835AUX")
+
     # Keep the BCM2835 camera pipeline and the Pi camera sensors (OV5647 /
     # IMX219); drop unrelated USB capture cards, DVB tuners and radio devices.
     if rel.startswith("drivers/media/"):
