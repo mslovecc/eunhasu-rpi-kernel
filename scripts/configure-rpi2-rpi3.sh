@@ -266,7 +266,7 @@ keep = {
     "SND_SOC_BCM2835_I2S", "SND_USB", "SND_USB_AUDIO",
     # Common generic interfaces required by the system
     "INPUT", "INPUT_EVDEV", "INPUT_KEYBOARD", "INPUT_MOUSE",
-    "HID", "HID_GENERIC", "USB_HID",
+    "INPUT_TOUCHSCREEN", "HID", "HID_GENERIC", "USB_HID", "HWMON",
     "SCSI", "BLK_DEV_SD", "USB_STORAGE", "USB_UAS",
     "NET", "INET", "PACKET", "UNIX", "NETDEVICES",
     "EXT4_FS", "VFAT_FS", "FAT_FS", "SQUASHFS", "OVERLAY_FS",
