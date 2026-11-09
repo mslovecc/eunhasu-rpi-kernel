@@ -76,13 +76,13 @@ jobs:
           done
 
           chmod 0755 \
-            scripts/download-sources.sh \
+            scripts/download-h3-v2-sources.sh \
             scripts/prepare-h3-v2-config.sh \
             scripts/audit-diretta-h3-v2.sh \
             scripts/package-h3.sh
 
           for f in \
-            scripts/download-sources.sh \
+            scripts/download-h3-v2-sources.sh \
             scripts/prepare-h3-v2-config.sh \
             scripts/audit-diretta-h3-v2.sh \
             scripts/package-h3.sh; do
@@ -101,15 +101,11 @@ jobs:
             }
           done
 
-      - name: Download Linux source and Fedora SRPM from Release (fallback mirror enabled)
+      - name: Download Linux source and Fedora SRPM from GitHub Release (fallback mirror enabled)
         shell: bash
-        env:
-          REPOSITORY_RAW_BASE: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}
         run: |
           set -Eeuo pipefail
-          export GITHUB_WORKSPACE="$GITHUB_WORKSPACE"
-          export REPOSITORY_RAW_BASE
-          bash scripts/download-sources.sh
+          bash scripts/download-h3-v2-sources.sh
 
       - name: Extract and verify Fedora SRPM patch payload (Fedora config is not used)
         shell: bash
