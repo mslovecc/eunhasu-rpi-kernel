@@ -430,8 +430,11 @@ jobs:
             --enable DEVTMPFS_MOUNT \
             --enable MMC \
             --enable MMC_BLOCK \
+            --enable BLOCK \
             --enable MMC_BCM2835 \
             --enable MSDOS_PARTITION \
+            --enable EXT4_FS \
+            --enable USB_STORAGE \
             --enable BINFMT_ELF \
             --enable BINFMT_SCRIPT \
             --enable VFP \
