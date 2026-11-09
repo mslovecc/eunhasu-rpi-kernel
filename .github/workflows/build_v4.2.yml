@@ -9,7 +9,7 @@ name: Build Raspberry Pi 2/3 Kernel from Fedora ARMv7 config (V4.2 - Diretta ABI
         default: "0"
         type: string
       verify_diretta_symbols:
-        description: "Fail if Diretta imports are missing from Module.symvers"
+        description: "Emit a warning if Diretta imports are missing; continue packaging"
         required: false
         default: true
         type: boolean
