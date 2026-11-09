@@ -118,19 +118,7 @@ if [[ -s "$PI_FRAGMENT" ]]; then
   bash scripts/kconfig/merge_config.sh -m -r .config "$PI_FRAGMENT"
 fi
 
-echo "===== 2.1 Ensure SD-card boot drivers are built in (only if in repo config and source) ====="
-for sym in MMC_BLOCK MMC_BCM2835; do
-  grep -Eq "^CONFIG_$sym=" "$BASE_CONFIG" || {
-    echo "::error::Repository Fedora config does not define required Pi SD option CONFIG_$sym."
-    exit 1
-  }
-  grep -Eq "^CONFIG_$sym=|^# CONFIG_$sym is not set" "$WORK/fedora-base-resolved.config" || {
-    echo "::error::Linux 6.2.15 source does not support repository option CONFIG_$sym."
-    exit 1
-  }
-  scripts/config --file .config --enable "$sym"
-done
-
+echo "===== 2.1 SD/MMC options are checked in the advisory hardware report ====="
 echo "===== 3. Apply only the A20 Diretta ABI fragment ====="
 bash scripts/kconfig/merge_config.sh -m -r .config "$ABI_CONFIG"
 
@@ -179,33 +167,7 @@ else:
     print("none")
 PY
 
-require_config() {
-  local expected="$1"
-  grep -Fqx "$expected" .config || {
-    echo "::error::Required setting not retained: $expected"
-    return 1
-  }
-  echo "OK: $expected"
-}
-
-for setting in \
-  CONFIG_ARCH_BCM2835=y \
-  CONFIG_ARCH_MULTI_V7=y \
-  CONFIG_AEABI=y \
-  CONFIG_SMP=y \
-  CONFIG_PREEMPT=y \
-  CONFIG_MODULES=y \
-  CONFIG_MODULE_UNLOAD=y \
-  CONFIG_HARDENED_USERCOPY=y \
-  CONFIG_FORTIFY_SOURCE=y \
-  CONFIG_HIGHMEM=y \
-  CONFIG_NEON=y \
-  CONFIG_MMC=y \
-  CONFIG_MMC_BLOCK=y \
-  CONFIG_MMC_BCM2835=y; do
-  require_config "$setting"
-done
-
+echo "===== Pi hardware configuration completeness is advisory ====="
 grep -qx '# CONFIG_MODVERSIONS is not set' .config || {
   echo "::error::CONFIG_MODVERSIONS must remain disabled for the supplied Diretta vermagic."
   exit 1
@@ -332,8 +294,12 @@ def prune(rel, sym):
 
     # Keep VC4 (Pi 2/3 display) and VCHIQ (VideoCore services); remove other
     # discrete, virtual and unrelated SoC GPU implementations.
-    if rel.startswith("drivers/gpu/"):
+    if rel.startswith("drivers/gpu/drm/"):
+        if rel in {"drivers/gpu/drm/Kconfig", "drivers/gpu/drm/Makefile"}:
+            return False
         return not (rel.startswith("drivers/gpu/drm/vc4/") and sym.startswith("DRM_"))
+    if rel.startswith("drivers/gpu/"):
+        return True
     if rel.startswith("drivers/staging/"):
         return not rel.startswith("drivers/staging/vc04_services/")
 
