@@ -8,7 +8,6 @@
 # scheduler, CPU, filesystem, networking-stack and debug defaults.
 #
 # USB host controller and common peripherals
-CONFIG_USB_DWCOTG=y
 CONFIG_USB_DWC2=y
 CONFIG_USB_STORAGE=y
 CONFIG_USB_LAN78XX=y
