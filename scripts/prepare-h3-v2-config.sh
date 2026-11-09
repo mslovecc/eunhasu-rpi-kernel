@@ -44,9 +44,9 @@ CONFIG_MODULE_UNLOAD=y
 # CONFIG_MODULE_SIG is not set
 # CONFIG_MODULE_SIG_FORCE is not set
 CONFIG_SOUND=y
-CONFIG_SND=m
-CONFIG_SND_PCM=m
-CONFIG_SND_TIMER=m
+CONFIG_SND=y
+CONFIG_SND_PCM=y
+CONFIG_SND_TIMER=y
 EOF
 
 bash scripts/kconfig/merge_config.sh -m .config \
@@ -71,9 +71,9 @@ bash scripts/config --file .config \
   --disable MODULE_SIG \
   --disable MODULE_SIG_FORCE \
   --enable SOUND \
-  --module SND \
-  --module SND_PCM \
-  --module SND_TIMER
+  --enable SND \
+  --enable SND_PCM \
+  --enable SND_TIMER
 
 make ARCH=arm olddefconfig
 make ARCH=arm syncconfig
@@ -98,8 +98,8 @@ for item in \
   CONFIG_MODULES=y \
   CONFIG_MODULE_UNLOAD=y \
   CONFIG_SOUND=y \
-  CONFIG_SND=m \
-  CONFIG_SND_PCM=m; do
+  CONFIG_SND=y \
+  CONFIG_SND_PCM=y; do
   grep -qx "$item" .config || {
     echo "::error::Required setting did not survive Kconfig: $item"
     exit 1
