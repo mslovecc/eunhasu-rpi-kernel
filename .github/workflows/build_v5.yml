@@ -314,6 +314,11 @@ jobs:
           git clone --depth 1 --branch 1_36_1 https://git.busybox.net/busybox "$work/busybox"
           cd "$work/busybox"
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- defconfig
+          # The initramfs does not use tc. Disable this optional applet:
+          # BusyBox 1.36.1 tc.c expects legacy CBQ UAPI definitions that are
+          # unavailable in the Ubuntu 24.04 GitHub Actions headers.
+          sed -i '/^CONFIG_TC=/d; /^# CONFIG_TC is not set$/d' .config
+          printf '%s\\n' '# CONFIG_TC is not set' >> .config
           sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
           # Required initramfs applets, including PARTUUID lookup.
           for opt in BLKID SWITCH_ROOT MOUNT UMOUNT SLEEP MDEV; do
@@ -324,6 +329,10 @@ jobs:
           # feed EOF so every newly introduced option takes its Kconfig default.
           # This keeps the GitHub Actions build fully non-interactive.
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- oldconfig </dev/null
+          if grep -qx 'CONFIG_TC=y' .config; then
+            echo "::error::BusyBox tc applet must be disabled for this initramfs."
+            exit 1
+          fi
           make ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- -j"$(nproc)"
           install -m 0755 busybox "$root/bin/busybox"
           arm-linux-gnueabihf-readelf -h "$root/bin/busybox" | grep -q 'Class:.*ELF32'
