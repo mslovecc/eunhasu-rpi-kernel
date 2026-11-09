@@ -206,7 +206,7 @@ jobs:
           "$CROSS_COMPILE"readelf -h "$root/bin/busybox" | grep -q 'Class:.*ELF32'
           "$CROSS_COMPILE"readelf -h "$root/bin/busybox" | grep -q 'Machine:.*ARM'
 
-          for app in sh mount umount mkdir sleep mdev switch_root; do
+          for app in sh mount umount mkdir sleep mdev switch_root cat sed; do
             ln -sf busybox "$root/bin/$app"
           done
 
@@ -236,23 +236,12 @@ jobs:
                 for sysdev in /sys/class/block/*; do
                   [ -f "$sysdev/uevent" ] || continue
                   partuuid="$(sed -n 's/^PARTUUID=//p' "$sysdev/uevent")"
-                  if [ -n "$partuuid" ] && [ "${partuuid,,}" = "${wanted,,}" ]; then
+                  partuuid="$(printf '%s' "$partuuid" | tr '[:upper:]' '[:lower:]')"
+                  wanted_lc="$(printf '%s' "$wanted" | tr '[:upper:]' '[:lower:]')"
+                  if [ -n "$partuuid" ] && [ "$partuuid" = "$wanted_lc" ]; then
                     dev="/dev/${sysdev##*/}"
                     break 2
                   fi
-                done
-                sleep 1
-                elapsed=$((elapsed + 1))
-              done
-              ;;
-            UUID=*)
-              wanted="${ROOT#UUID=}"
-              elapsed=0
-              while [ "$elapsed" -lt "$ROOTWAIT" ]; do
-                for sysdev in /sys/class/block/*; do
-                  [ -f "$sysdev/uevent" ] || continue
-                  uuid="$(sed -n 's/^PARTUUID=//p' "$sysdev/uevent")"
-                  [ -n "$uuid" ] && [ "${uuid,,}" = "${wanted,,}" ] && dev="/dev/${sysdev##*/}" && break 2
                 done
                 sleep 1
                 elapsed=$((elapsed + 1))
