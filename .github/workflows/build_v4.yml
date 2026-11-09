@@ -445,7 +445,6 @@ jobs:
             --enable USB_DWC2_HOST \
             --enable SERIAL_AMBA_PL011 \
             --enable SERIAL_AMBA_PL011_CONSOLE \
-            --enable EXT4_FS \
             --module SQUASHFS \
             --module OVERLAY_FS \
             --module BLK_DEV_LOOP \
@@ -740,6 +739,14 @@ jobs:
           test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
           test -s "$SRC/Module.symvers"
           test -s "$SRC/System.map"
+
+          # Audit the actual output module architecture, not only the config.
+          SAMPLE_BUILT_KO="$(find "$SRC" -type f -name '*.ko' -print -quit)"
+          test -n "$SAMPLE_BUILT_KO"
+          readelf -h "$SAMPLE_BUILT_KO" | grep -q 'Class:.*ELF32'
+          readelf -h "$SAMPLE_BUILT_KO" | grep -q 'Machine:.*ARM'
+          readelf -A "$SAMPLE_BUILT_KO" | grep -q 'Tag_CPU_arch: v7'
+          echo "Built kernel module is ARMv7 ELF32."
 
           # The upstream Pi 2 DTB enables BCM2835 SDHOST (not Arasan SDHCI).
           # The driver must be built-in so the kernel can resolve root=PARTUUID
