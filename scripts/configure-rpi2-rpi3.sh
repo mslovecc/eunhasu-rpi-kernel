@@ -285,17 +285,17 @@ def prune(rel, sym):
     # Keep the generic core plus the BCM2835/Pi-specific implementations.
     root_allow = {
         "drivers/clk/Kconfig": {"COMMON_CLK", "CLKDEV_LOOKUP", "CLK_BCM2835", "CLK_RASPBERRYPI"},
-        "drivers/pinctrl/Kconfig": {"PINCTRL", "PINCTRL_BCM2835"},
-        "drivers/gpio/Kconfig": {"GPIOLIB", "GPIO_SYSFS", "GPIO_CDEV", "GPIO_CDEV_V1", "GPIO_RASPBERRYPI_EXP", "GPIO_BCM2835"},
+        "drivers/pinctrl/Kconfig": {"PINCTRL", "PINMUX", "PINCONF", "GENERIC_PINCONF", "PINCTRL_BCM2835"},
+        "drivers/gpio/Kconfig": {"GPIOLIB", "GPIOLIB_IRQCHIP", "GPIO_SYSFS", "GPIO_CDEV", "GPIO_CDEV_V1", "GPIO_RASPBERRYPI_EXP", "GPIO_BCM2835", "GPIO_REGMAP"},
         "drivers/i2c/busses/Kconfig": {"I2C_BCM2835"},
-        "drivers/spi/Kconfig": {"SPI_BCM2835", "SPI_BCM2835AUX", "SPI_SPIDEV"},
+        "drivers/spi/Kconfig": {"SPI", "SPI_MASTER", "SPI_MEM", "SPI_BCM2835", "SPI_BCM2835AUX", "SPI_SPIDEV"},
         "drivers/mmc/host/Kconfig": {"MMC_BCM2835"},
         "drivers/tty/serial/Kconfig": {"SERIAL_CORE", "SERIAL_AMBA_PL011", "SERIAL_AMBA_PL011_CONSOLE", "SERIAL_8250", "SERIAL_8250_CONSOLE", "SERIAL_8250_BCM2835AUX"},
         "drivers/thermal/Kconfig": {"THERMAL", "THERMAL_OF", "THERMAL_HWMON", "THERMAL_DEFAULT_GOV_STEP_WISE", "THERMAL_GOV_STEP_WISE", "BCM2835_THERMAL"},
         "drivers/watchdog/Kconfig": {"WATCHDOG", "WATCHDOG_CORE", "WATCHDOG_HANDLE_BOOT_ENABLED", "BCM2835_WDT"},
         "drivers/pwm/Kconfig": {"PWM", "PWM_SYSFS", "PWM_BCM2835", "PWM_RASPBERRYPI_POE"},
         "drivers/mailbox/Kconfig": {"MAILBOX", "BCM2835_MBOX"},
-        "drivers/dma/Kconfig": {"DMADEVICES", "DMA_ENGINE", "DMA_BCM2835"},
+        "drivers/dma/Kconfig": {"DMADEVICES", "DMA_ENGINE", "DMA_VIRTUAL_CHANNELS", "DMA_OF", "DMA_SHARED_BUFFER", "DMA_BCM2835"},
     }
     if rel in root_allow:
         return sym not in root_allow[rel]
