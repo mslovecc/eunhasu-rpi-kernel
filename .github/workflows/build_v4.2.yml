@@ -273,6 +273,534 @@ jobs:
           make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
             -j"$JOBS" zImage modules dtbs
 
+          echo "===== Verify excluded PC GPU / PCI storage modules were not built ====="
+          if find "$SRC" -type f \\
+              \\( -name '*.ko' -o -name '*.ko.xz' -o -name '*.ko.gz' -o -name '*.ko.zst' \\) \\
+              -printf '%f\\n' | grep -Eiq '^(amdgpu|nouveau|radeon|nvme([_-].*)?|nvmet([_-].*)?|ahci|ata_piix|sata_.*)\\.ko(\\.(xz|gz|zst))?          test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
+          test -s "$SRC/Module.symvers"
+          test -s "$SRC/System.map"
+          test -s "$SRC/vmlinux"
+
+          # Verify the SD host driver is built in when Fedora's Kconfig exposes it.
+          if grep -qx 'CONFIG_MMC_BCM2835=y' "$SRC/.config"; then
+            if ! grep -Eq 'bcm2835.*mmc|mmc.*bcm2835' "$SRC/modules.builtin" 2>/dev/null; then
+              echo "MMC_BCM2835=y; checking built-in object metadata."
+              test -s "$SRC/drivers/mmc/host/built-in.a"
+            fi
+          fi
+
+          # Pi 3 DTBs are expected from the same 32-bit multi-platform source.
+          for dtb in bcm2837-rpi-3-b.dtb bcm2837-rpi-3-b-plus.dtb; do
+            if [[ ! -s "$SRC/arch/arm/boot/dts/$dtb" ]]; then
+              echo "::warning::Optional Pi 3 DTB not present in this 6.2.15 source: $dtb"
+            fi
+          done
+
+      - name: Verify Diretta vermagic and exported-symbol coverage
+        shell: bash
+        env:
+          VERIFY_SYMBOLS: ${{ inputs.verify_diretta_symbols }}
+        run: |
+          set -Eeuo pipefail
+          SAMPLE_KO="$(find "$SRC" -type f -name '*.ko' -print -quit)"
+          test -n "$SAMPLE_KO" || {
+            echo "::error::No kernel module was produced."
+            exit 1
+          }
+          BUILT_VERMAGIC="$(modinfo -F vermagic "$SAMPLE_KO" | xargs)"
+          echo "Original vermagic: $EXPECTED_VERMAGIC"
+          echo "Built vermagic:    $BUILT_VERMAGIC"
+          [[ "$BUILT_VERMAGIC" == "$EXPECTED_VERMAGIC" ]] || {
+            echo "::error::Built module vermagic mismatch."
+            exit 1
+          }
+
+          echo "===== Required A20 Module.symvers exports ====="
+          for sym in __check_object_size fortify_panic page_address; do
+            awk -v s="$sym" '
+              $2 == s && $1 == "0x00000000" && $4 == "EXPORT_SYMBOL" {
+                print
+                found=1
+              }
+              END { if (!found) exit 1 }
+            ' "$SRC/Module.symvers" || {
+              echo "::error::Required A20 export missing or has wrong CRC/type: $sym"
+              exit 1
+            }
+          done
+
+          # Allow either supplied Diretta module to satisfy imports from the other.
+          : > .work/diretta/combined-module-exports.txt
+          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            arm-linux-gnueabihf-nm -g --defined-only "$module" 2>/dev/null \
+              | awk 'NF {print $NF}' >> .work/diretta/combined-module-exports.txt
+          done
+          sort -u -o .work/diretta/combined-module-exports.txt .work/diretta/combined-module-exports.txt
+
+          REPORT="$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
+          MISSING_TOTAL=0
+          {
+            echo "Diretta static compatibility report"
+            echo "Kernel release: $KERNEL_RELEASE"
+            echo "Original vermagic: $EXPECTED_VERMAGIC"
+            echo "Built vermagic: $BUILT_VERMAGIC"
+            echo
+            echo "Static vermagic and exported-symbol-name checks do not prove complete binary ABI compatibility."
+            echo
+            echo "[Required A20 exports: CRC 0x00000000 / EXPORT_SYMBOL]"
+            for REQUIRED_SYMBOL in __check_object_size fortify_panic page_address; do
+              awk -v s="$REQUIRED_SYMBOL" '$2 == s {print}' "$SRC/Module.symvers"
+            done
+            echo
+            echo "[Symbols exported by the two supplied Diretta modules]"
+            cat .work/diretta/combined-module-exports.txt
+            echo
+            for MODULE in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+              NAME="$(basename "$MODULE")"
+              SYMBOL_LIST=".work/diretta/$NAME.undefined"
+              MISSING_FILE=".work/diretta/$NAME.missing"
+              : > "$MISSING_FILE"
+              while IFS= read -r SYMBOL; do
+                [[ -n "$SYMBOL" ]] || continue
+                if ! awk -v s="$SYMBOL" '$2 == s {found=1} END {exit !found}' "$SRC/Module.symvers" \
+                    && ! grep -Fxq "$SYMBOL" .work/diretta/combined-module-exports.txt; then
+                  echo "$SYMBOL" >> "$MISSING_FILE"
+                fi
+              done < "$SYMBOL_LIST"
+              COUNT="$(wc -l < "$MISSING_FILE")"
+              MISSING_TOTAL=$((MISSING_TOTAL + COUNT))
+              echo "[$NAME]"
+              echo "SHA256: $(sha256sum "$MODULE" | awk '{print $1}')"
+              echo "Undefined symbols: $(wc -l < "$SYMBOL_LIST")"
+              echo "Missing exported symbols: $COUNT"
+              if [[ "$COUNT" -gt 0 ]]; then sed 's/^/MISSING: /' "$MISSING_FILE"; fi
+              echo
+            done
+            echo "Total missing symbols: $MISSING_TOTAL"
+          } > "$REPORT"
+          cat "$REPORT"
+
+          if [[ "$VERIFY_SYMBOLS" == "true" && "$MISSING_TOTAL" -gt 0 ]]; then
+            echo "::error::Diretta imports are missing from Module.symvers."
+            exit 1
+          fi
+
+      - name: Package Raspberry Pi 2/3 kernel
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PKG="$GITHUB_WORKSPACE/package"
+          mkdir -p "$PKG/boot/overlays" "$PKG/lib/modules" "$PKG/build-info"
+
+          install -m 0644 "$SRC/arch/arm/boot/zImage" "$PKG/boot/kernel7.img"
+
+          # Include every Pi 2/3 board DTB that exists in this source tree.
+          for dtb in \
+            bcm2836-rpi-2-b.dtb \
+            bcm2837-rpi-3-b.dtb \
+            bcm2837-rpi-3-b-plus.dtb; do
+            src_dtb="$SRC/arch/arm/boot/dts/$dtb"
+            if [[ -s "$src_dtb" ]]; then
+              install -m 0644 "$src_dtb" "$PKG/boot/$dtb"
+            fi
+          done
+          test -s "$PKG/boot/bcm2836-rpi-2-b.dtb"
+
+          if compgen -G "$SRC/arch/arm/boot/dts/overlays/*.dtbo" > /dev/null; then
+            cp "$SRC"/arch/arm/boot/dts/overlays/*.dtbo "$PKG/boot/overlays/"
+          fi
+          if [[ -f "$SRC/arch/arm/boot/dts/overlays/README" ]]; then
+            cp "$SRC/arch/arm/boot/dts/overlays/README" "$PKG/boot/overlays/"
+          fi
+
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            INSTALL_MOD_PATH="$PKG" modules_install
+          rm -f "$PKG/lib/modules/$KERNEL_RELEASE/build" \
+            "$PKG/lib/modules/$KERNEL_RELEASE/source"
+          depmod -b "$PKG" "$KERNEL_RELEASE"
+
+          # Preserve the module compression selected by the Fedora base config.
+          INITRD_ROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
+          INITRD_CPIO="$GITHUB_WORKSPACE/.work/initramfs7.cpio"
+          rm -rf "$INITRD_ROOT"
+          install -d "$INITRD_ROOT/usr/lib/modules"
+          cp -a "$PKG/lib/modules/$KERNEL_RELEASE" "$INITRD_ROOT/usr/lib/modules/"
+          MODULE_DIR="$PKG/lib/modules/$KERNEL_RELEASE"
+          MODULE_COUNT="$(find "$MODULE_DIR" -type f | grep -Ec '\.ko(\.(xz|gz|zst))?$' || true)"
+          [[ "$MODULE_COUNT" -gt 0 ]] || {
+            echo "::error::No installed kernel modules found in a supported format."
+            find "$MODULE_DIR" -type f | head -n 50
+            exit 1
+          }
+          echo "Installed kernel module files: $MODULE_COUNT"
+          find "$MODULE_DIR" -type f | grep -E '\.ko(\.(xz|gz|zst))?$' | sed 's#^.*/##' | sed -n '1,30p'
+          (
+            cd "$INITRD_ROOT"
+            find . -print0 | LC_ALL=C sort -z \
+              | cpio --null --create --format=newc --owner=0:0
+          ) > "$INITRD_CPIO"
+          gzip -9 -n -c "$INITRD_CPIO" > "$PKG/boot/initramfs7"
+          gzip -t "$PKG/boot/initramfs7"
+          gzip -dc "$PKG/boot/initramfs7" | cpio -it --quiet \
+            > "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" "$PKG/build-info/initramfs7.contents.txt"
+          grep -Eq "usr/lib/modules/$KERNEL_RELEASE/.+\.ko(\.(xz|gz|zst))?$" \
+            "$PKG/build-info/initramfs7.contents.txt"
+          file "$INITRD_CPIO" "$PKG/boot/initramfs7"
+          ls -lh "$INITRD_CPIO" "$PKG/boot/initramfs7"
+          (cd "$PKG/boot" && sha256sum initramfs7) \
+            > "$PKG/build-info/initramfs7.sha256"
+          rm -f "$INITRD_CPIO"
+
+          install -m 0644 "$SRC/.config" "$PKG/build-info/rpi2-rpi3.config"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 "$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware-audit.txt" \
+            "$PKG/build-info/rpi2-rpi3-hardware-audit.txt"
+          cp .work/rpi-reference-info.txt "$PKG/build-info/"
+          cp .work/srpm-identification.txt "$PKG/build-info/"
+          cp diretta-compatibility-report.txt "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/output-localversion" "$PKG/build-info/localversion"
+          cp "$GITHUB_WORKSPACE/rpi2-rpi3-v4.2-config-report.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/rpi2-rpi3-intersection-report.txt" "$PKG/build-info/"
+
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2 Model B / Raspberry Pi 3 kernel package
+
+          Kernel release: $KERNEL_RELEASE
+          Source: Fedora Linux 6.2.15 SRPM
+          SRPM: $SRPM_NAME
+          Hardware reference: official Raspberry Pi bcm2709_defconfig
+          Hardware reference commit: $RPI_REF
+
+          Kernel image:
+            boot/kernel7.img
+
+          Device trees (when present in this source):
+            boot/bcm2836-rpi-2-b.dtb
+            boot/bcm2837-rpi-3-b.dtb
+            boot/bcm2837-rpi-3-b-plus.dtb
+
+          Initramfs:
+            boot/initramfs7 (gzip-compressed newc CPIO; modules only)
+            Module compression follows the Fedora config: .ko, .ko.xz, .ko.gz, or .ko.zst.
+          Non-Pi PCI/PCIe, SATA/NVMe and PC/discrete GPU drivers are excluded.
+
+          Kernel modules:
+            lib/modules/$KERNEL_RELEASE/
+
+          Configuration design:
+            The repository Fedora ARMv7 config is the only base .config.
+            Official bcm2709_defconfig and matching 6.2.15 bcm2835_defconfig are
+            references only; only supported symbols present in the repository
+            config are selected.
+            The A20 fragment contains Diretta ABI settings only. The required
+            Raspberry Pi ALSA path and USB Audio Class driver are validated;
+            unrelated Fedora SND_* options absent from Linux 6.2.15 are not
+            treated as build blockers.
+            PCI/PCIe, ATA/SATA, NVMe, AMDGPU, Nouveau, Radeon and PC/virtual GPU
+            drivers are explicitly disabled and audited. Shared SCSI/USB storage,
+            DRM core and Raspberry Pi VC4 support are retained.
+            CONFIG_MODVERSIONS is disabled to match the supplied Diretta modules.
+
+          IMPORTANT:
+            This package is not a byte-for-byte reproduction of the SOtM A20 kernel.
+            Original Diretta modules are not modified.
+            Matching vermagic and exported symbol names do not prove full binary ABI
+            compatibility or guarantee runtime module loading.
+            Raspberry Pi boot firmware and root filesystem are not included.
+          EOF
+
+          cd "$GITHUB_WORKSPACE"
+          tar -czf "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" package
+          sha256sum "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" \
+            > "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz.sha256"
+          ls -lh "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" \
+            "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz.sha256"
+
+      - name: Upload V4.2 build artifacts and configuration reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}-v4.2
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}.tar.gz
+            rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
+            output-rpi2-rpi3-v4.2.config
+            output-localversion
+            rpi2-rpi3-v4.2-config-report.txt
+            diretta-compatibility-report.txt
+            .work/rpi2-rpi3-hardware-audit.txt
+            rpi2-rpi3-intersection-report.txt
+            package/README.txt
+            package/build-info/**; then
+            echo "::error::A forbidden PC GPU / NVMe / SATA module was produced."
+            find "$SRC" -type f \\
+              \\( -name '*.ko' -o -name '*.ko.xz' -o -name '*.ko.gz' -o -name '*.ko.zst' \\) \\
+              -printf '%f\\n' | grep -Ei '^(amdgpu|nouveau|radeon|nvme([_-].*)?|nvmet([_-].*)?|ahci|ata_piix|sata_.*)\\.ko(\\.(xz|gz|zst))?          test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
+          test -s "$SRC/Module.symvers"
+          test -s "$SRC/System.map"
+          test -s "$SRC/vmlinux"
+
+          # Verify the SD host driver is built in when Fedora's Kconfig exposes it.
+          if grep -qx 'CONFIG_MMC_BCM2835=y' "$SRC/.config"; then
+            if ! grep -Eq 'bcm2835.*mmc|mmc.*bcm2835' "$SRC/modules.builtin" 2>/dev/null; then
+              echo "MMC_BCM2835=y; checking built-in object metadata."
+              test -s "$SRC/drivers/mmc/host/built-in.a"
+            fi
+          fi
+
+          # Pi 3 DTBs are expected from the same 32-bit multi-platform source.
+          for dtb in bcm2837-rpi-3-b.dtb bcm2837-rpi-3-b-plus.dtb; do
+            if [[ ! -s "$SRC/arch/arm/boot/dts/$dtb" ]]; then
+              echo "::warning::Optional Pi 3 DTB not present in this 6.2.15 source: $dtb"
+            fi
+          done
+
+      - name: Verify Diretta vermagic and exported-symbol coverage
+        shell: bash
+        env:
+          VERIFY_SYMBOLS: ${{ inputs.verify_diretta_symbols }}
+        run: |
+          set -Eeuo pipefail
+          SAMPLE_KO="$(find "$SRC" -type f -name '*.ko' -print -quit)"
+          test -n "$SAMPLE_KO" || {
+            echo "::error::No kernel module was produced."
+            exit 1
+          }
+          BUILT_VERMAGIC="$(modinfo -F vermagic "$SAMPLE_KO" | xargs)"
+          echo "Original vermagic: $EXPECTED_VERMAGIC"
+          echo "Built vermagic:    $BUILT_VERMAGIC"
+          [[ "$BUILT_VERMAGIC" == "$EXPECTED_VERMAGIC" ]] || {
+            echo "::error::Built module vermagic mismatch."
+            exit 1
+          }
+
+          echo "===== Required A20 Module.symvers exports ====="
+          for sym in __check_object_size fortify_panic page_address; do
+            awk -v s="$sym" '
+              $2 == s && $1 == "0x00000000" && $4 == "EXPORT_SYMBOL" {
+                print
+                found=1
+              }
+              END { if (!found) exit 1 }
+            ' "$SRC/Module.symvers" || {
+              echo "::error::Required A20 export missing or has wrong CRC/type: $sym"
+              exit 1
+            }
+          done
+
+          # Allow either supplied Diretta module to satisfy imports from the other.
+          : > .work/diretta/combined-module-exports.txt
+          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            arm-linux-gnueabihf-nm -g --defined-only "$module" 2>/dev/null \
+              | awk 'NF {print $NF}' >> .work/diretta/combined-module-exports.txt
+          done
+          sort -u -o .work/diretta/combined-module-exports.txt .work/diretta/combined-module-exports.txt
+
+          REPORT="$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
+          MISSING_TOTAL=0
+          {
+            echo "Diretta static compatibility report"
+            echo "Kernel release: $KERNEL_RELEASE"
+            echo "Original vermagic: $EXPECTED_VERMAGIC"
+            echo "Built vermagic: $BUILT_VERMAGIC"
+            echo
+            echo "Static vermagic and exported-symbol-name checks do not prove complete binary ABI compatibility."
+            echo
+            echo "[Required A20 exports: CRC 0x00000000 / EXPORT_SYMBOL]"
+            for REQUIRED_SYMBOL in __check_object_size fortify_panic page_address; do
+              awk -v s="$REQUIRED_SYMBOL" '$2 == s {print}' "$SRC/Module.symvers"
+            done
+            echo
+            echo "[Symbols exported by the two supplied Diretta modules]"
+            cat .work/diretta/combined-module-exports.txt
+            echo
+            for MODULE in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+              NAME="$(basename "$MODULE")"
+              SYMBOL_LIST=".work/diretta/$NAME.undefined"
+              MISSING_FILE=".work/diretta/$NAME.missing"
+              : > "$MISSING_FILE"
+              while IFS= read -r SYMBOL; do
+                [[ -n "$SYMBOL" ]] || continue
+                if ! awk -v s="$SYMBOL" '$2 == s {found=1} END {exit !found}' "$SRC/Module.symvers" \
+                    && ! grep -Fxq "$SYMBOL" .work/diretta/combined-module-exports.txt; then
+                  echo "$SYMBOL" >> "$MISSING_FILE"
+                fi
+              done < "$SYMBOL_LIST"
+              COUNT="$(wc -l < "$MISSING_FILE")"
+              MISSING_TOTAL=$((MISSING_TOTAL + COUNT))
+              echo "[$NAME]"
+              echo "SHA256: $(sha256sum "$MODULE" | awk '{print $1}')"
+              echo "Undefined symbols: $(wc -l < "$SYMBOL_LIST")"
+              echo "Missing exported symbols: $COUNT"
+              if [[ "$COUNT" -gt 0 ]]; then sed 's/^/MISSING: /' "$MISSING_FILE"; fi
+              echo
+            done
+            echo "Total missing symbols: $MISSING_TOTAL"
+          } > "$REPORT"
+          cat "$REPORT"
+
+          if [[ "$VERIFY_SYMBOLS" == "true" && "$MISSING_TOTAL" -gt 0 ]]; then
+            echo "::error::Diretta imports are missing from Module.symvers."
+            exit 1
+          fi
+
+      - name: Package Raspberry Pi 2/3 kernel
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PKG="$GITHUB_WORKSPACE/package"
+          mkdir -p "$PKG/boot/overlays" "$PKG/lib/modules" "$PKG/build-info"
+
+          install -m 0644 "$SRC/arch/arm/boot/zImage" "$PKG/boot/kernel7.img"
+
+          # Include every Pi 2/3 board DTB that exists in this source tree.
+          for dtb in \
+            bcm2836-rpi-2-b.dtb \
+            bcm2837-rpi-3-b.dtb \
+            bcm2837-rpi-3-b-plus.dtb; do
+            src_dtb="$SRC/arch/arm/boot/dts/$dtb"
+            if [[ -s "$src_dtb" ]]; then
+              install -m 0644 "$src_dtb" "$PKG/boot/$dtb"
+            fi
+          done
+          test -s "$PKG/boot/bcm2836-rpi-2-b.dtb"
+
+          if compgen -G "$SRC/arch/arm/boot/dts/overlays/*.dtbo" > /dev/null; then
+            cp "$SRC"/arch/arm/boot/dts/overlays/*.dtbo "$PKG/boot/overlays/"
+          fi
+          if [[ -f "$SRC/arch/arm/boot/dts/overlays/README" ]]; then
+            cp "$SRC/arch/arm/boot/dts/overlays/README" "$PKG/boot/overlays/"
+          fi
+
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            INSTALL_MOD_PATH="$PKG" modules_install
+          rm -f "$PKG/lib/modules/$KERNEL_RELEASE/build" \
+            "$PKG/lib/modules/$KERNEL_RELEASE/source"
+          depmod -b "$PKG" "$KERNEL_RELEASE"
+
+          # Preserve the module compression selected by the Fedora base config.
+          INITRD_ROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
+          INITRD_CPIO="$GITHUB_WORKSPACE/.work/initramfs7.cpio"
+          rm -rf "$INITRD_ROOT"
+          install -d "$INITRD_ROOT/usr/lib/modules"
+          cp -a "$PKG/lib/modules/$KERNEL_RELEASE" "$INITRD_ROOT/usr/lib/modules/"
+          MODULE_DIR="$PKG/lib/modules/$KERNEL_RELEASE"
+          MODULE_COUNT="$(find "$MODULE_DIR" -type f | grep -Ec '\.ko(\.(xz|gz|zst))?$' || true)"
+          [[ "$MODULE_COUNT" -gt 0 ]] || {
+            echo "::error::No installed kernel modules found in a supported format."
+            find "$MODULE_DIR" -type f | head -n 50
+            exit 1
+          }
+          echo "Installed kernel module files: $MODULE_COUNT"
+          find "$MODULE_DIR" -type f | grep -E '\.ko(\.(xz|gz|zst))?$' | sed 's#^.*/##' | sed -n '1,30p'
+          (
+            cd "$INITRD_ROOT"
+            find . -print0 | LC_ALL=C sort -z \
+              | cpio --null --create --format=newc --owner=0:0
+          ) > "$INITRD_CPIO"
+          gzip -9 -n -c "$INITRD_CPIO" > "$PKG/boot/initramfs7"
+          gzip -t "$PKG/boot/initramfs7"
+          gzip -dc "$PKG/boot/initramfs7" | cpio -it --quiet \
+            > "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" "$PKG/build-info/initramfs7.contents.txt"
+          grep -Eq "usr/lib/modules/$KERNEL_RELEASE/.+\.ko(\.(xz|gz|zst))?$" \
+            "$PKG/build-info/initramfs7.contents.txt"
+          file "$INITRD_CPIO" "$PKG/boot/initramfs7"
+          ls -lh "$INITRD_CPIO" "$PKG/boot/initramfs7"
+          (cd "$PKG/boot" && sha256sum initramfs7) \
+            > "$PKG/build-info/initramfs7.sha256"
+          rm -f "$INITRD_CPIO"
+
+          install -m 0644 "$SRC/.config" "$PKG/build-info/rpi2-rpi3.config"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 "$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware-audit.txt" \
+            "$PKG/build-info/rpi2-rpi3-hardware-audit.txt"
+          cp .work/rpi-reference-info.txt "$PKG/build-info/"
+          cp .work/srpm-identification.txt "$PKG/build-info/"
+          cp diretta-compatibility-report.txt "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/output-localversion" "$PKG/build-info/localversion"
+          cp "$GITHUB_WORKSPACE/rpi2-rpi3-v4.2-config-report.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/rpi2-rpi3-intersection-report.txt" "$PKG/build-info/"
+
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2 Model B / Raspberry Pi 3 kernel package
+
+          Kernel release: $KERNEL_RELEASE
+          Source: Fedora Linux 6.2.15 SRPM
+          SRPM: $SRPM_NAME
+          Hardware reference: official Raspberry Pi bcm2709_defconfig
+          Hardware reference commit: $RPI_REF
+
+          Kernel image:
+            boot/kernel7.img
+
+          Device trees (when present in this source):
+            boot/bcm2836-rpi-2-b.dtb
+            boot/bcm2837-rpi-3-b.dtb
+            boot/bcm2837-rpi-3-b-plus.dtb
+
+          Initramfs:
+            boot/initramfs7 (gzip-compressed newc CPIO; modules only)
+            Module compression follows the Fedora config: .ko, .ko.xz, .ko.gz, or .ko.zst.
+          Non-Pi PCI/PCIe, SATA/NVMe and PC/discrete GPU drivers are excluded.
+
+          Kernel modules:
+            lib/modules/$KERNEL_RELEASE/
+
+          Configuration design:
+            The repository Fedora ARMv7 config is the only base .config.
+            Official bcm2709_defconfig and matching 6.2.15 bcm2835_defconfig are
+            references only; only supported symbols present in the repository
+            config are selected.
+            The A20 fragment contains Diretta ABI settings only. The required
+            Raspberry Pi ALSA path and USB Audio Class driver are validated;
+            unrelated Fedora SND_* options absent from Linux 6.2.15 are not
+            treated as build blockers.
+            PCI/PCIe, ATA/SATA, NVMe, AMDGPU, Nouveau, Radeon and PC/virtual GPU
+            drivers are explicitly disabled and audited. Shared SCSI/USB storage,
+            DRM core and Raspberry Pi VC4 support are retained.
+            CONFIG_MODVERSIONS is disabled to match the supplied Diretta modules.
+
+          IMPORTANT:
+            This package is not a byte-for-byte reproduction of the SOtM A20 kernel.
+            Original Diretta modules are not modified.
+            Matching vermagic and exported symbol names do not prove full binary ABI
+            compatibility or guarantee runtime module loading.
+            Raspberry Pi boot firmware and root filesystem are not included.
+          EOF
+
+          cd "$GITHUB_WORKSPACE"
+          tar -czf "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" package
+          sha256sum "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" \
+            > "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz.sha256"
+          ls -lh "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" \
+            "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz.sha256"
+
+      - name: Upload V4.2 build artifacts and configuration reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}-v4.2
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}.tar.gz
+            rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
+            output-rpi2-rpi3-v4.2.config
+            output-localversion
+            rpi2-rpi3-v4.2-config-report.txt
+            diretta-compatibility-report.txt
+            .work/rpi2-rpi3-hardware-audit.txt
+            rpi2-rpi3-intersection-report.txt
+            package/README.txt
+            package/build-info/** || true
+            exit 1
+          fi
+          echo "No excluded AMD/NVIDIA/Radeon/NVMe/SATA modules found."
+
           test -s "$SRC/arch/arm/boot/zImage"
           test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
           test -s "$SRC/Module.symvers"
