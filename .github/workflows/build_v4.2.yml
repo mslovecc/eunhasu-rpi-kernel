@@ -285,7 +285,11 @@ jobs:
             echo "Module files: $MODULE_COUNT"
             echo
             echo "[Module path counts]"
-            awk -F/ '{print $1 "/" $2 "/" $3}' "$MODULE_DIRS" | sort | uniq -c | sort -nr | head -n 80
+            awk -F/ '{print $1 "/" $2 "/" $3}' "$MODULE_DIRS" \
+              | sort \
+              | uniq -c \
+              | sort -nr \
+              | awk 'NR <= 80'
             echo
             echo "[Potential non-Pi driver leftovers]"
             grep -Ei '(^|/)(media|dvb|wireless/(ath|intel|mediatek|ralink|realtek)|usb/serial|usb/gadget|ata|nvme|pci|firewire|infiniband|iio|hwmon|w1|md)/|/(amdgpu|nouveau|radeon|nvme[^/]*|ahci|ata_piix)\.ko' "$MODULE_DIRS" || true
@@ -454,7 +458,7 @@ jobs:
           MODULE_COUNT="$(find "$MODULE_DIR" -type f | grep -Ec '\.ko(\.(xz|gz|zst))?$' || true)"
           [[ "$MODULE_COUNT" -gt 0 ]] || {
             echo "::error::No installed kernel modules found in a supported format."
-            find "$MODULE_DIR" -type f | head -n 50
+            find "$MODULE_DIR" -type f | sed -n '1,50p'
             exit 1
           }
           echo "Installed kernel module files: $MODULE_COUNT"
