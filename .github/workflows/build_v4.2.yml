@@ -116,13 +116,38 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p .work/downloads
-          BASE_URL="https://s2.bravo123.top"
-          curl -fL --retry 5 --retry-all-errors \
-            "$BASE_URL/$SRPM_NAME" -o ".work/downloads/$SRPM_NAME"
-          curl -fL --retry 5 --retry-all-errors \
-            "$BASE_URL/$SOURCE_TARBALL" -o ".work/downloads/$SOURCE_TARBALL"
-          echo "$SRPM_SHA256  .work/downloads/$SRPM_NAME" | sha256sum --check -
-          echo "$SOURCE_SHA256  .work/downloads/$SOURCE_TARBALL" | sha256sum --check -
+          PRIMARY_URL="https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/$RELEASE_TAG"
+          BACKUP_URL="https://s2.bravo123.top"
+
+          download_verified() {
+            local filename="$1"
+            local expected_sha256="$2"
+            local destination=".work/downloads/$filename"
+            local url
+
+            rm -f "$destination"
+            for url in "$PRIMARY_URL/$filename" "$BACKUP_URL/$filename"; do
+              echo "Attempting download: $url"
+              if curl -fL --connect-timeout 20 --max-time 1800 \
+                  --retry 2 --retry-all-errors "$url" -o "$destination"; then
+                if echo "$expected_sha256  $destination" | sha256sum --check --status; then
+                  echo "Verified $filename from $url"
+                  return 0
+                fi
+                echo "::warning::SHA256 mismatch from $url; trying next source."
+              else
+                echo "::warning::Download failed from $url; trying next source."
+              fi
+              rm -f "$destination"
+            done
+
+            echo "::error::Could not download and verify $filename from primary or backup URL."
+            return 1
+          }
+
+          download_verified "$SRPM_NAME" "$SRPM_SHA256"
+          download_verified "$SOURCE_TARBALL" "$SOURCE_SHA256"
+          sha256sum ".work/downloads/$SRPM_NAME" ".work/downloads/$SOURCE_TARBALL"
           rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE}\n' \
             ".work/downloads/$SRPM_NAME" | tee .work/srpm-identification.txt
           grep -qx 'kernel 6.2.15-100.fc36' .work/srpm-identification.txt
