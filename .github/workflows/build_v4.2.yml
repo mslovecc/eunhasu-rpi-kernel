@@ -1,4 +1,4 @@
-name: Build Raspberry Pi 2/3 Kernel from Fedora 6.2.15 source (V4.2 - Pi-only drivers)
+name: Build Raspberry Pi 2/3 Kernel from Fedora ARMv7 config (V4.2 - Diretta ABI)
 
 "on":
   workflow_dispatch:
@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   build:
-    name: Linux 6.2.15 / Raspberry Pi 2+3 ARMv7 / Diretta (V4.2 - Pi-only drivers)
+    name: Linux 6.2.15 / Raspberry Pi 2+3 ARMv7 / Diretta (Fedora-base V4.2)
     runs-on: ubuntu-24.04
     timeout-minutes: 240
 
@@ -459,6 +459,7 @@ jobs:
           cp diretta-compatibility-report.txt "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/output-localversion" "$PKG/build-info/localversion"
           cp "$GITHUB_WORKSPACE/rpi2-rpi3-v4.2-config-report.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/rpi2-rpi3-intersection-report.txt" "$PKG/build-info/"
 
           cat > "$PKG/README.txt" <<EOF
           Raspberry Pi 2 Model B / Raspberry Pi 3 kernel package
