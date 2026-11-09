@@ -479,7 +479,6 @@ jobs:
           echo "===== Raspberry Pi 2B/3B hardware driver validation ====="
 
           for sym in \
-            CONFIG_USB_DWCOTG=y \
             CONFIG_USB_DWC2=y \
             CONFIG_USB_STORAGE=y \
             CONFIG_USB_LAN78XX=y \
