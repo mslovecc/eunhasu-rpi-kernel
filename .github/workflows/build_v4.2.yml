@@ -408,19 +408,206 @@ jobs:
             "$PKG/lib/modules/$KERNEL_RELEASE/source"
           depmod -b "$PKG" "$KERNEL_RELEASE"
 
-          # Module-only initramfs: gzip CPIO containing XZ-compressed modules.
+          # Preserve the module compression selected by the Fedora base config.
           INITRD_ROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
           INITRD_CPIO="$GITHUB_WORKSPACE/.work/initramfs7.cpio"
           rm -rf "$INITRD_ROOT"
           install -d "$INITRD_ROOT/usr/lib/modules"
           cp -a "$PKG/lib/modules/$KERNEL_RELEASE" "$INITRD_ROOT/usr/lib/modules/"
           MODULE_DIR="$PKG/lib/modules/$KERNEL_RELEASE"
-          XZ_MODULE_COUNT="$(find "$MODULE_DIR" -type f -name '*.ko.xz' | wc -l)"
-          PLAIN_MODULE_COUNT="$(find "$MODULE_DIR" -type f -name '*.ko' | wc -l)"
-          [[ "$XZ_MODULE_COUNT" -gt 0 && "$PLAIN_MODULE_COUNT" -eq 0 ]] || {
-            echo "::error::Expected only XZ-compressed modules; .ko.xz=$XZ_MODULE_COUNT, .ko=$PLAIN_MODULE_COUNT"
+          MODULE_COUNT="$(find "$MODULE_DIR" -type f | grep -Ec '\.ko(\.(xz|gz|zst))?
+          (
+            cd "$INITRD_ROOT"
+            find . -print0 | LC_ALL=C sort -z \
+              | cpio --null --create --format=newc --owner=0:0
+          ) > "$INITRD_CPIO"
+          gzip -9 -n -c "$INITRD_CPIO" > "$PKG/boot/initramfs7"
+          gzip -t "$PKG/boot/initramfs7"
+          gzip -dc "$PKG/boot/initramfs7" | cpio -it --quiet \
+            > "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" "$PKG/build-info/initramfs7.contents.txt"
+          grep -Eq "usr/lib/modules/$KERNEL_RELEASE/.+\.ko(\.(xz|gz|zst))?$" \
+            "$PKG/build-info/initramfs7.contents.txt"
+          file "$INITRD_CPIO" "$PKG/boot/initramfs7"
+          ls -lh "$INITRD_CPIO" "$PKG/boot/initramfs7"
+          (cd "$PKG/boot" && sha256sum initramfs7) \
+            > "$PKG/build-info/initramfs7.sha256"
+          rm -f "$INITRD_CPIO"
+
+          install -m 0644 "$SRC/.config" "$PKG/build-info/rpi2-rpi3.config"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 "$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware-audit.txt" \
+            "$PKG/build-info/rpi2-rpi3-hardware-audit.txt"
+          cp .work/rpi-reference-info.txt "$PKG/build-info/"
+          cp .work/srpm-identification.txt "$PKG/build-info/"
+          cp diretta-compatibility-report.txt "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/output-localversion" "$PKG/build-info/localversion"
+          cp "$GITHUB_WORKSPACE/rpi2-rpi3-v4.2-config-report.txt" "$PKG/build-info/"
+
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2 Model B / Raspberry Pi 3 kernel package
+
+          Kernel release: $KERNEL_RELEASE
+          Source: Fedora Linux 6.2.15 SRPM
+          SRPM: $SRPM_NAME
+          Hardware reference: official Raspberry Pi bcm2709_defconfig
+          Hardware reference commit: $RPI_REF
+
+          Kernel image:
+            boot/kernel7.img
+
+          Device trees (when present in this source):
+            boot/bcm2836-rpi-2-b.dtb
+            boot/bcm2837-rpi-3-b.dtb
+            boot/bcm2837-rpi-3-b-plus.dtb
+
+          Initramfs:
+            boot/initramfs7 (gzip-compressed newc CPIO; modules only)
+            Module compression follows the Fedora config: .ko, .ko.xz, .ko.gz, or .ko.zst.
+
+          Kernel modules:
+            lib/modules/$KERNEL_RELEASE/
+
+          Configuration design:
+            The repository Fedora ARMv7 config is the only base .config.
+            Official bcm2709_defconfig and matching 6.2.15 bcm2835_defconfig are
+            references only; only supported symbols present in the repository
+            config are selected.
+            The A20 fragment contains Diretta ABI settings only. Existing ALSA
+            and USB audio selections from the Fedora config are preserved.
+            CONFIG_MODVERSIONS is disabled to match the supplied Diretta modules.
+
+          IMPORTANT:
+            This package is not a byte-for-byte reproduction of the SOtM A20 kernel.
+            Original Diretta modules are not modified.
+            Matching vermagic and exported symbol names do not prove full binary ABI
+            compatibility or guarantee runtime module loading.
+            Raspberry Pi boot firmware and root filesystem are not included.
+          EOF
+
+          cd "$GITHUB_WORKSPACE"
+          tar -czf "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" package
+          sha256sum "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" \
+            > "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz.sha256"
+          ls -lh "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" \
+            "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz.sha256"
+
+      - name: Upload V4.2 build artifacts and configuration reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}-v4.2
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}.tar.gz
+            rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
+            output-rpi2-rpi3-v4.2.config
+            output-localversion
+            rpi2-rpi3-v4.2-config-report.txt
+            diretta-compatibility-report.txt
+            .work/rpi2-rpi3-hardware-audit.txt
+            rpi2-rpi3-intersection-report.txt
+            package/README.txt
+            package/build-info/** || true)"
+          [[ "$MODULE_COUNT" -gt 0 ]] || {
+            echo "::error::No installed kernel modules found in a supported format."
+            find "$MODULE_DIR" -type f | head -n 50
             exit 1
           }
+          echo "Installed kernel module files: $MODULE_COUNT"
+          find "$MODULE_DIR" -type f | grep -E '\.ko(\.(xz|gz|zst))?
+          (
+            cd "$INITRD_ROOT"
+            find . -print0 | LC_ALL=C sort -z \
+              | cpio --null --create --format=newc --owner=0:0
+          ) > "$INITRD_CPIO"
+          gzip -9 -n -c "$INITRD_CPIO" > "$PKG/boot/initramfs7"
+          gzip -t "$PKG/boot/initramfs7"
+          gzip -dc "$PKG/boot/initramfs7" | cpio -it --quiet \
+            > "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" "$PKG/build-info/initramfs7.contents.txt"
+          grep -Eq "usr/lib/modules/$KERNEL_RELEASE/.+\.ko\.xz$" \
+            "$PKG/build-info/initramfs7.contents.txt"
+          file "$INITRD_CPIO" "$PKG/boot/initramfs7"
+          ls -lh "$INITRD_CPIO" "$PKG/boot/initramfs7"
+          (cd "$PKG/boot" && sha256sum initramfs7) \
+            > "$PKG/build-info/initramfs7.sha256"
+          rm -f "$INITRD_CPIO"
+
+          install -m 0644 "$SRC/.config" "$PKG/build-info/rpi2-rpi3.config"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 "$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware-audit.txt" \
+            "$PKG/build-info/rpi2-rpi3-hardware-audit.txt"
+          cp .work/rpi-reference-info.txt "$PKG/build-info/"
+          cp .work/srpm-identification.txt "$PKG/build-info/"
+          cp diretta-compatibility-report.txt "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/output-localversion" "$PKG/build-info/localversion"
+          cp "$GITHUB_WORKSPACE/rpi2-rpi3-v4.2-config-report.txt" "$PKG/build-info/"
+
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2 Model B / Raspberry Pi 3 kernel package
+
+          Kernel release: $KERNEL_RELEASE
+          Source: Fedora Linux 6.2.15 SRPM
+          SRPM: $SRPM_NAME
+          Hardware reference: official Raspberry Pi bcm2709_defconfig
+          Hardware reference commit: $RPI_REF
+
+          Kernel image:
+            boot/kernel7.img
+
+          Device trees (when present in this source):
+            boot/bcm2836-rpi-2-b.dtb
+            boot/bcm2837-rpi-3-b.dtb
+            boot/bcm2837-rpi-3-b-plus.dtb
+
+          Initramfs:
+            boot/initramfs7 (gzip-compressed newc CPIO; modules only)
+            Modules inside initramfs are XZ-compressed (.ko.xz).
+
+          Kernel modules:
+            lib/modules/$KERNEL_RELEASE/
+
+          Configuration design:
+            Official Raspberry Pi bcm2709_defconfig is the actual base .config.
+            Fedora generic ARMv7 config is not used.
+            The project A20 fragment adds preserved Diretta ABI/ALSA settings.
+            Unrelated AMD/Radeon/Matrox GPU drivers and MPTCP/MCTP are disabled
+            and audited before compilation. CONFIG_MODVERSIONS is disabled.
+
+          IMPORTANT:
+            This package is not a byte-for-byte reproduction of the SOtM A20 kernel.
+            Original Diretta modules are not modified.
+            Matching vermagic and exported symbol names do not prove full binary ABI
+            compatibility or guarantee runtime module loading.
+            Raspberry Pi boot firmware and root filesystem are not included.
+          EOF
+
+          cd "$GITHUB_WORKSPACE"
+          tar -czf "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" package
+          sha256sum "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" \
+            > "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz.sha256"
+          ls -lh "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz" \
+            "rpi2-rpi3-kernel-$KERNEL_RELEASE.tar.gz.sha256"
+
+      - name: Upload V4.2 build artifacts and configuration reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}-v4.2
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}.tar.gz
+            rpi2-rpi3-kernel-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
+            output-rpi2-rpi3-v4.2.config
+            output-localversion
+            rpi2-rpi3-v4.2-config-report.txt
+            diretta-compatibility-report.txt
+            .work/rpi2-rpi3-hardware-audit.txt
+            package/README.txt
+            package/build-info/** | sed 's#^.*/##' | head -n 30
           (
             cd "$INITRD_ROOT"
             find . -print0 | LC_ALL=C sort -z \
