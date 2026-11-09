@@ -477,33 +477,64 @@ jobs:
 
           echo
           echo "===== Raspberry Pi 2B/3B hardware driver validation ====="
+          echo "This is an aggregate audit: every requested symbol is checked before failing."
 
-          for sym in \
-            CONFIG_USB_DWC2=y \
-            CONFIG_USB_STORAGE=y \
-            CONFIG_USB_LAN78XX=y \
-            CONFIG_USB_NET_SMSC95XX=y \
-            CONFIG_SPI_SPIDEV=m \
-            CONFIG_FB_BCM2708=y \
-            CONFIG_BACKLIGHT_RPI=m \
-            CONFIG_SENSORS_RASPBERRYPI_HWMON=m \
-            CONFIG_RPI_POE_POWER=m \
-            CONFIG_MFD_RASPBERRYPI_POE_HAT=m \
-            CONFIG_VIDEO_BCM2835_UNICAM=m \
-            CONFIG_VIDEO_IMX219=m \
-            CONFIG_VIDEO_OV5647=m \
-            CONFIG_SND_BCM2708_SOC_HIFIBERRY_DAC=m \
-            CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUS=m \
-            CONFIG_SND_BCM2708_SOC_HIFIBERRY_DIGI=m \
-            CONFIG_SND_BCM2708_SOC_JUSTBOOM_DAC=m \
-            CONFIG_SND_BCM2708_SOC_IQAUDIO_DAC=m \
-            CONFIG_SND_BCM2708_SOC_RPI_DAC=m; do
-            grep -qx "$sym" .config || {
-              echo "::error::Raspberry Pi hardware setting missing after olddefconfig: $sym"
-              exit 1
-            }
-            echo "OK: $sym"
-          done
+          HARDWARE_FAILURES=0
+
+          while IFS= read -r sym; do
+            [[ -n "$sym" ]] || continue
+
+            name="${sym%%=*}"
+            expected="${sym#*=}"
+
+            if grep -qx "$sym" .config; then
+              echo "OK: $sym"
+              continue
+            fi
+
+            actual="$(grep -E "^(CONFIG_${name#CONFIG_}=|# CONFIG_${name#CONFIG_} is not set)" .config || true)"
+
+            declaration="$(
+              grep -R -l -E "^[[:space:]]*(menuconfig|config)[[:space:]]+${name#CONFIG_}([[:space:]]|$)" \
+                --include='Kconfig' --include='Kconfig.*' . \
+                --exclude-dir=.git 2>/dev/null | head -n 5 | tr '\n' ' '
+            )"
+
+            if [[ -z "$declaration" ]]; then
+              reason="NO Kconfig declaration in this Fedora 6.2.15 source tree"
+            else
+              reason="symbol exists but requested value was not retained (likely unmet dependencies or choice constraints)"
+            fi
+
+            echo "::error::$sym not satisfied; actual='${actual:-<no .config entry>}'; reason=$reason; declaration_files='${declaration:-<none>}'"
+            HARDWARE_FAILURES=$((HARDWARE_FAILURES + 1))
+          done <<'HARDWARE_SYMBOLS'
+          CONFIG_USB_DWC2=y
+          CONFIG_USB_STORAGE=y
+          CONFIG_USB_LAN78XX=y
+          CONFIG_USB_NET_SMSC95XX=y
+          CONFIG_SPI_SPIDEV=m
+          CONFIG_FB_BCM2708=y
+          CONFIG_BACKLIGHT_RPI=m
+          CONFIG_SENSORS_RASPBERRYPI_HWMON=m
+          CONFIG_RPI_POE_POWER=m
+          CONFIG_MFD_RASPBERRYPI_POE_HAT=m
+          CONFIG_VIDEO_BCM2835_UNICAM=m
+          CONFIG_VIDEO_IMX219=m
+          CONFIG_VIDEO_OV5647=m
+          CONFIG_SND_BCM2708_SOC_HIFIBERRY_DAC=m
+          CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUS=m
+          CONFIG_SND_BCM2708_SOC_HIFIBERRY_DIGI=m
+          CONFIG_SND_BCM2708_SOC_JUSTBOOM_DAC=m
+          CONFIG_SND_BCM2708_SOC_IQAUDIO_DAC=m
+          CONFIG_SND_BCM2708_SOC_RPI_DAC=m
+          HARDWARE_SYMBOLS
+
+          if [[ "$HARDWARE_FAILURES" -gt 0 ]]; then
+            echo "::error::Hardware fragment audit found $HARDWARE_FAILURES unsatisfied setting(s). See the complete report above; no first-error exit."
+            exit 1
+          fi
+          echo "All Raspberry Pi hardware fragment settings passed."
 
           # These settings are ABI-critical and must never be imported
           # from the upstream bcm2709_defconfig.
