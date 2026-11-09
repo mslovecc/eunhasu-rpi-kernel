@@ -54,9 +54,6 @@ install -m 0644 "$SRC/.config" "$PKG/build-info/orangepi-pc.config"
 install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
 install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
 install -m 0644 "$DTB" "$PKG/build-info/sun8i-h3-orangepi-pc.dtb"
-install -m 0644 "$ROOT/diretta-h3-compatibility-report.txt" \
-  "$PKG/build-info/diretta-compatibility-report.txt"
-
 if [[ -f "$ROOT/.work/srpm-identification.txt" ]]; then
   install -m 0644 "$ROOT/.work/srpm-identification.txt" "$PKG/build-info/"
 fi
