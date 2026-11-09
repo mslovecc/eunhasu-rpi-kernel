@@ -533,8 +533,9 @@ jobs:
             Pi touchscreen/sensors/power options, USB storage and Pi/USB audio.
             Missing or unavailable hardware symbols (including legacy framebuffer,
             optional camera and I2S HAT options) are reported as advisory entries
-            and do not stop compilation. CONFIG_MODVERSIONS is disabled
-            to match the supplied Diretta modules.
+            and do not stop compilation. Missing Diretta exports/imports are also
+            reported without blocking packaging; review the compatibility report.
+            CONFIG_MODVERSIONS is disabled to match the supplied Diretta modules.
 
           IMPORTANT:
             This package is not a byte-for-byte reproduction of the SOtM A20 kernel.
