@@ -311,7 +311,9 @@ def prune(rel, sym):
     if rel.startswith("drivers/pinctrl/"):
         return not (rel.startswith("drivers/pinctrl/bcm/") and sym == "PINCTRL_BCM2835")
     if rel.startswith("drivers/tty/serial/"):
-        return not (rel.startswith("drivers/tty/serial/8250/") and sym == "SERIAL_8250_BCM2835AUX")
+        return not (rel.startswith("drivers/tty/serial/8250/") and
+                    sym in {"SERIAL_8250", "SERIAL_8250_CONSOLE",
+                            "SERIAL_8250_BCM2835AUX"})
 
     # Keep the BCM2835 camera pipeline and the Pi camera sensors (OV5647 /
     # IMX219); drop unrelated USB capture cards, DVB tuners and radio devices.
