@@ -1,0 +1,12 @@
+# A20 / Diretta ABI requirements only.
+# This fragment intentionally does not alter ALSA, USB audio, or SoC audio
+# driver selections from the repository Fedora ARMv7 base configuration.
+CONFIG_PREEMPT=y
+CONFIG_SMP=y
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+# CONFIG_MODVERSIONS is not set
+CONFIG_HARDENED_USERCOPY=y
+CONFIG_FORTIFY_SOURCE=y
+CONFIG_HIGHMEM=y
+CONFIG_NEON=y
