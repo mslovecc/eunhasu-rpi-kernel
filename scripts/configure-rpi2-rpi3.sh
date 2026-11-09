@@ -11,6 +11,7 @@ test -n "$KERNEL_RELEASE"
 
 BASE_CONFIG="$GITHUB_WORKSPACE/$SUPPORT_DIR/kernel-armv7hl-fedora.config"
 ABI_CONFIG="$GITHUB_WORKSPACE/$ABI_FRAGMENT"
+HARDWARE_FRAGMENT="$GITHUB_WORKSPACE/config/rpi2-rpi3-hardware.fragment"
 PI_OFFICIAL="$RPI_SRC/arch/arm/configs/bcm2709_defconfig"
 PI_MATCHED="$SRC/arch/arm/configs/bcm2835_defconfig"
 WORK="$GITHUB_WORKSPACE/.work"
@@ -18,7 +19,7 @@ PI_FRAGMENT="$WORK/rpi2-rpi3-intersection.fragment"
 PI_REPORT="$WORK/rpi2-rpi3-intersection-report.txt"
 HARDWARE_REPORT="$WORK/rpi2-rpi3-hardware-audit.txt"
 
-for f in "$BASE_CONFIG" "$ABI_CONFIG" "$PI_OFFICIAL" "$PI_MATCHED"; do
+for f in "$BASE_CONFIG" "$ABI_CONFIG" "$HARDWARE_FRAGMENT" "$PI_OFFICIAL" "$PI_MATCHED"; do
   test -s "$f" || {
     echo "::error::Required configuration reference is missing: $f"
     exit 1
@@ -35,12 +36,12 @@ make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 cp .config "$WORK/fedora-base-resolved.config"
 
 echo "===== 2. Build supported Raspberry Pi config intersection ====="
-python3 - "$BASE_CONFIG" "$PI_OFFICIAL" "$PI_MATCHED" .config "$PI_FRAGMENT" "$PI_REPORT" <<'PY'
+python3 - "$BASE_CONFIG" "$PI_OFFICIAL" "$PI_MATCHED" "$HARDWARE_FRAGMENT" .config "$PI_FRAGMENT" "$PI_REPORT" <<'PY'
 import re
 import sys
 from pathlib import Path
 
-base_path, official_path, matched_path, resolved_path, fragment_path, report_path = map(Path, sys.argv[1:])
+base_path, official_path, matched_path, hardware_path, resolved_path, fragment_path, report_path = map(Path, sys.argv[1:])
 
 def parse(path):
     result = {}
@@ -59,6 +60,7 @@ base = parse(base_path)
 resolved = parse(resolved_path)
 official = parse(official_path)
 matched = parse(matched_path)
+hardware = parse(hardware_path)
 
 # These choices describe the Diretta ABI or package format, not Pi hardware.
 # They remain controlled by the repository Fedora config and A20 ABI fragment.
@@ -73,7 +75,7 @@ protected = {
 # Official Pi 2/3 config is primary. The matching 6.2.15 bcm2835_defconfig
 # supplies legacy hardware symbols absent from newer Pi defconfigs.
 candidates = {}
-for source in (matched, official):
+for source in (matched, official, hardware):
     for name, value in source.items():
         if value in ("y", "m") and name not in protected:
             candidates[name] = value
@@ -97,6 +99,7 @@ rows = [
     "Repository base: " + str(base_path),
     "Official reference: " + str(official_path),
     "Version-matched reference: " + str(matched_path),
+    "Pi hardware supplement: " + str(hardware_path),
     "Applied symbols: " + str(len(applied)),
     "Skipped (not present in repository Fedora config): " + str(len(not_in_repo)),
     "Skipped (not recognized by this source/Kconfig): " + str(len(not_supported)),
@@ -241,7 +244,8 @@ keep = {
     "MEDIA_PLATFORM_SUPPORT", "MEDIA_COMMON_OPTIONS", "MEDIA_ATTACH",
     "MEDIA_CEC_SUPPORT", "MEDIA_CEC_RC", "CEC_CORE", "CEC_PIN",
     "VIDEO_DEV", "VIDEO_V4L2", "VIDEO_V4L2_I2C",
-    "VIDEO_V4L2_SUBDEV_API", "VIDEO_BCM2835", "VIDEO_OV5647",
+    "VIDEO_V4L2_SUBDEV_API", "VIDEO_BCM2835", "VIDEO_BCM2835_UNICAM",
+    "VIDEO_OV5647",
     "VIDEO_IMX219", "V4L2_FWNODE", "V4L2_ASYNC",
     "VIDEOBUF2_CORE", "VIDEOBUF2_V4L2", "VIDEOBUF2_MEMOPS",
     "VIDEOBUF2_VMALLOC", "VIDEOBUF2_DMA_CONTIG", "VIDEOBUF2_DMA_SG",
@@ -317,7 +321,8 @@ def prune(rel, sym):
             "MEDIA_PLATFORM_SUPPORT", "MEDIA_COMMON_OPTIONS", "MEDIA_ATTACH",
             "MEDIA_CEC_SUPPORT", "MEDIA_CEC_RC", "CEC_CORE", "CEC_PIN",
             "VIDEO_DEV", "VIDEO_V4L2", "VIDEO_V4L2_I2C",
-            "VIDEO_V4L2_SUBDEV_API", "VIDEO_BCM2835", "VIDEO_OV5647",
+            "VIDEO_V4L2_SUBDEV_API", "VIDEO_BCM2835", "VIDEO_BCM2835_UNICAM",
+            "VIDEO_OV5647",
             "VIDEO_IMX219", "V4L2_FWNODE", "V4L2_ASYNC",
             "VIDEOBUF2_CORE", "VIDEOBUF2_V4L2", "VIDEOBUF2_MEMOPS",
             "VIDEOBUF2_VMALLOC", "VIDEOBUF2_DMA_CONTIG", "VIDEOBUF2_DMA_SG",
