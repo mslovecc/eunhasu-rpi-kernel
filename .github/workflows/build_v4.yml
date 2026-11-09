@@ -1036,7 +1036,7 @@ jobs:
           sha256sum "$PKG"/extra/diretta/*.ko \
             > "$PKG/build-info/diretta-modules.sha256"
 
-          depmod -b "$PKG" "$KERNEL_RELEASE"
+          depmod -F "$SRC/System.map" -b "$PKG" "$KERNEL_RELEASE"
 
           # Build a module-only initramfs matching this exact kernel release.
           #
