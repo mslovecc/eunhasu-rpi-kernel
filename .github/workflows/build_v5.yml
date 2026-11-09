@@ -206,7 +206,7 @@ jobs:
           "$CROSS_COMPILE"readelf -h "$root/bin/busybox" | grep -q 'Class:.*ELF32'
           "$CROSS_COMPILE"readelf -h "$root/bin/busybox" | grep -q 'Machine:.*ARM'
 
-          for app in sh mount umount mkdir sleep mdev switch_root cat sed; do
+          for app in sh mount umount mkdir sleep mdev switch_root cat sed tr; do
             ln -sf busybox "$root/bin/$app"
           done
 
@@ -308,7 +308,7 @@ jobs:
           Source commit: $RPI_SOURCE_COMMIT
           Config: bcm2709_defconfig
           Kernel image: boot/kernel7.img
-          Initramfs: boot/initramfs7 (ARMv7 static BusyBox; PARTUUID/UUID/device root support)
+          Initramfs: boot/initramfs7 (ARMv7 static BusyBox; PARTUUID/device root support)
           Device trees: boot/*.dtb
           Overlays: boot/overlays/
           Modules: lib/modules/$KERNEL_RELEASE/
