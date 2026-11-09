@@ -1,4 +1,4 @@
-name: Build Raspberry Pi 2 Kernel from Fedora 6.2.15 SRPM
+name: V7 - Build Raspberry Pi 2 Kernel from Fedora 6.2.15 SRPM
 
 on:
   workflow_dispatch:
@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   build:
-    name: Fedora 6.2.15 / Raspberry Pi 2 / Diretta
+    name: V7 / Fedora 6.2.15 / Raspberry Pi 2 / Diretta
     runs-on: ubuntu-24.04
     timeout-minutes: 240
 
@@ -431,6 +431,12 @@ jobs:
             --enable MMC \
             --enable MMC_BLOCK \
             --enable MMC_BCM2835 \
+            --enable MSDOS_PARTITION \
+            --enable BINFMT_ELF \
+            --enable BINFMT_SCRIPT \
+            --enable VFP \
+            --enable VFPv3 \
+            --enable NEON \
             --enable USB \
             --enable USB_DWC2 \
             --enable USB_DWC2_HOST \
@@ -462,12 +468,25 @@ jobs:
           echo "===== Raspberry Pi 2 boot-critical configuration ====="
 
           for sym in \
+            CONFIG_BLOCK=y \
             CONFIG_MMC=y \
             CONFIG_MMC_BLOCK=y \
             CONFIG_MMC_BCM2835=y \
+            CONFIG_MSDOS_PARTITION=y \
+            CONFIG_EXT4_FS=y \
             CONFIG_BLK_DEV_INITRD=y \
             CONFIG_RD_GZIP=y \
-            CONFIG_MODULE_COMPRESS_XZ=y; do
+            CONFIG_MODULE_COMPRESS_XZ=y \
+            CONFIG_DEVTMPFS=y \
+            CONFIG_DEVTMPFS_MOUNT=y \
+            CONFIG_BINFMT_ELF=y \
+            CONFIG_BINFMT_SCRIPT=y \
+            CONFIG_VFP=y \
+            CONFIG_VFPv3=y \
+            CONFIG_NEON=y \
+            CONFIG_USB_DWC2=y \
+            CONFIG_USB_DWC2_HOST=y \
+            CONFIG_USB_STORAGE=y; do
 
             if ! grep -qx "$sym" .config; then
               echo "::error::Required boot/module configuration missing: $sym"
@@ -719,12 +738,27 @@ jobs:
           test -s "$SRC/Module.symvers"
           test -s "$SRC/System.map"
 
-          # MMC_BCM2835 is the BCM2835 SDHOST controller driver (not SDHCI).
-          # Require it to be built into the kernel for reliable SD-card boot.
+          # The upstream Pi 2 DTB enables BCM2835 SDHOST (not Arasan SDHCI).
+          # The driver must be built-in so the kernel can resolve root=PARTUUID
+          # and mount the SD root filesystem before starting its /sbin/init.
           grep -qx 'CONFIG_MMC_BCM2835=y' "$SRC/.config"
           grep -Fqx 'kernel/drivers/mmc/host/bcm2835.ko' "$SRC/modules.builtin"
 
-          echo "BCM2835 SDHOST is built into the kernel."
+          DTB="$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
+          SD_COMPAT="$(fdtget -t s "$DTB" /soc/mmc@7e202000 compatible)"
+          SD_STATUS="$(fdtget -t s "$DTB" /soc/mmc@7e202000 status)"
+          USB_COMPAT="$(fdtget -t s "$DTB" /soc/usb@7e980000 compatible)"
+
+          [[ "$SD_COMPAT" == "brcm,bcm2835-sdhost" ]]
+          [[ "$SD_STATUS" == "okay" ]]
+          [[ "$USB_COMPAT" == "brcm,bcm2835-usb" ]]
+          grep -qx 'CONFIG_USB_DWC2=y' "$SRC/.config"
+          grep -qx 'CONFIG_USB_DWC2_HOST=y' "$SRC/.config"
+          grep -Fqx 'kernel/drivers/usb/dwc2/dwc2.ko' "$SRC/modules.builtin"
+          grep -qx 'CONFIG_USB_STORAGE=y' "$SRC/.config"
+          grep -Fqx 'kernel/drivers/usb/storage/usb-storage.ko' "$SRC/modules.builtin"
+
+          echo "Pi 2 DTB SDHOST and BCM2835 USB/DWC2 drivers are built-in."
 
       - name: Diagnose missing Diretta kernel symbols
         shell: bash
@@ -969,8 +1003,14 @@ jobs:
           depmod -b "$PKG" "$KERNEL_RELEASE"
 
           # Build a module-only initramfs matching this exact kernel release.
+          #
+          # V7 intentionally does NOT include /init, systemd, bash, or any
+          # host userspace. With no /init, Linux 6.2 executes prepare_namespace:
+          # it resolves root=PARTUUID in-kernel, mounts the ext4 rootfs, then
+          # starts /sbin/init from the real root filesystem. This is the
+          # simplest and safest design for this SD-root Pi 2 target.
+          #
           # modules_install uses CONFIG_MODULE_COMPRESS_XZ to create .ko.xz.
-          # The complete newc CPIO is then gzip-compressed for firmware loading.
           INITRD_ROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
           INITRD_CPIO="$GITHUB_WORKSPACE/.work/initramfs7.cpio"
 
@@ -990,6 +1030,28 @@ jobs:
           fi
 
           echo "XZ-compressed kernel modules: $XZ_MODULE_COUNT"
+
+          # No build/source symlink may leak into the initramfs.
+          if find "$INITRD_ROOT" -type l -print -quit | grep -q .; then
+            echo "::error::Symlink found in module-only initramfs."
+            find "$INITRD_ROOT" -type l -print
+            exit 1
+          fi
+
+          # There must be no executable file, shell, systemd, /init, or ELF
+          # userspace binary in this archive. Kernel modules are XZ-compressed.
+          if find "$INITRD_ROOT" -type f -perm /111 -print -quit | grep -q .; then
+            echo "::error::Executable file found in module-only initramfs."
+            find "$INITRD_ROOT" -type f -perm /111 -print
+            exit 1
+          fi
+
+          while IFS= read -r -d '' candidate; do
+            if readelf -h "$candidate" >/dev/null 2>&1; then
+              echo "::error::Unexpected uncompressed ELF in initramfs: $candidate"
+              exit 1
+            fi
+          done < <(find "$INITRD_ROOT" -type f -print0)
 
           (
             cd "$INITRD_ROOT"
@@ -1012,18 +1074,25 @@ jobs:
           grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" \
             "$PKG/build-info/initramfs7.contents.txt"
 
-          if grep -Eq '(^|/)init$|6\.18\.34\+rpt-rpi-v7' \
+          if grep -Eq '(^|/)(init|sbin/init|bin/sh|bash|systemd)$' \
             "$PKG/build-info/initramfs7.contents.txt"; then
-            echo "::error::Unexpected init or old-kernel module path in initramfs7."
+            echo "::error::Unexpected userspace init path in module-only initramfs7."
+            exit 1
+          fi
+
+          if grep -Eq '(^|/)(bin|sbin|usr/bin|usr/sbin|usr/lib/systemd)(/|$)' \
+            "$PKG/build-info/initramfs7.contents.txt"; then
+            echo "::error::Userspace directory found in module-only initramfs7."
             exit 1
           fi
 
           # Confirm the initramfs itself contains compressed modules.
-          grep -Eq "usr/lib/modules/$KERNEL_RELEASE/.+\.ko\.xz$" \
+          grep -Eq "usr/lib/modules/$KERNEL_RELEASE/.+\\.ko\\.xz$" \
             "$PKG/build-info/initramfs7.contents.txt"
 
           echo
-          echo "===== Initramfs compression report ====="
+          echo "===== V7 initramfs architecture/scope audit ====="
+          echo "Archive contains modules only; no /init and no ELF userspace."
           file "$INITRD_CPIO" "$PKG/boot/initramfs7"
           ls -lh "$INITRD_CPIO" "$PKG/boot/initramfs7"
 
@@ -1071,6 +1140,9 @@ jobs:
 
           Initramfs:
           boot/initramfs7 (gzip-compressed newc CPIO, modules only)
+          No /init, shell, systemd, or ELF userspace is included.
+          Linux resolves root=PARTUUID itself, mounts the ext4 rootfs, then
+          starts /sbin/init from that real root filesystem.
           Kernel modules inside initramfs are XZ-compressed (.ko.xz).
 
           Kernel modules:
@@ -1081,6 +1153,12 @@ jobs:
           Fedora patch-6.2-redhat.patch
           Raspberry Pi 2 bcm2835_defconfig
           Project A20 ABI configuration fragment
+
+          V7 BOOT DESIGN:
+          Pi 2 DTB enables brcm,bcm2835-sdhost; CONFIG_MMC_BCM2835 is built-in.
+          DOS PARTUUID and ext4 root mounting are handled by the kernel.
+          BCM2835 USB uses the upstream DWC2 host driver, built into this kernel.
+          ARMv7 VFPv3/NEON support is enabled and audited in the final config.
 
           IMPORTANT:
           This is not a byte-for-byte reproduction of the SOtM A20 kernel.
@@ -1094,17 +1172,17 @@ jobs:
           cd "$GITHUB_WORKSPACE"
 
           tar -czf \
-            "rpi2-kernel-$KERNEL_RELEASE.tar.gz" \
+            "rpi2-kernel-v7-$KERNEL_RELEASE.tar.gz" \
             -C "$GITHUB_WORKSPACE" package
 
           sha256sum \
-            "rpi2-kernel-$KERNEL_RELEASE.tar.gz" \
-            > "rpi2-kernel-$KERNEL_RELEASE.tar.gz.sha256"
+            "rpi2-kernel-v7-$KERNEL_RELEASE.tar.gz" \
+            > "rpi2-kernel-v7-$KERNEL_RELEASE.tar.gz.sha256"
 
           echo "Package created:"
           ls -lh \
-            "rpi2-kernel-$KERNEL_RELEASE.tar.gz" \
-            "rpi2-kernel-$KERNEL_RELEASE.tar.gz.sha256"
+            "rpi2-kernel-v7-$KERNEL_RELEASE.tar.gz" \
+            "rpi2-kernel-v7-$KERNEL_RELEASE.tar.gz.sha256"
 
       # --------------------------------------------------
       # 12. Upload artifacts
@@ -1113,12 +1191,12 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rpi2-kernel-${{ env.KERNEL_RELEASE }}
+          name: rpi2-kernel-v7-${{ env.KERNEL_RELEASE }}
           if-no-files-found: error
           retention-days: 30
           path: |
-            rpi2-kernel-${{ env.KERNEL_RELEASE }}.tar.gz
-            rpi2-kernel-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
+            rpi2-kernel-v7-${{ env.KERNEL_RELEASE }}.tar.gz
+            rpi2-kernel-v7-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
             output-rpi2.config
             output-localversion
             diretta-compatibility-report.txt
