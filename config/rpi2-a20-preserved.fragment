@@ -23,8 +23,6 @@ CONFIG_SND_HRTIMER=m
 CONFIG_SND_DYNAMIC_MINORS=y
 CONFIG_SND_MAX_CARDS=16
 # CONFIG_SND_SUPPORT_OLD_API is not set
-# Non-Pi virtual, legacy and vendor-specific sound-card drivers are intentionally omitted.
-# Keep generic USB Audio Class support; Pi-specific audio drivers come from bcm2709_defconfig.
 CONFIG_SND_PROC_FS=y
 CONFIG_SND_VERBOSE_PROCFS=y
 # CONFIG_SND_VERBOSE_PRINTK is not set
@@ -43,7 +41,6 @@ CONFIG_SND_ARM=y
 # CONFIG_SND_SPI is not set
 CONFIG_SND_USB=y
 CONFIG_SND_USB_AUDIO=m
-# CONFIG_SND_USB_CAIAQ is not set
 CONFIG_SND_SOC=m
 # CONFIG_SND_SOC_ADI is not set
 # CONFIG_SND_SOC_AMD_ACP is not set
