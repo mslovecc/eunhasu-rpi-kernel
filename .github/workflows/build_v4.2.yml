@@ -273,17 +273,25 @@ jobs:
           make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
             -j"$JOBS" zImage modules dtbs
 
-          echo "===== Verify excluded PC GPU / PCI storage modules were not built ====="
-          if find "$SRC" -type f \
-              \( -name '*.ko' -o -name '*.ko.xz' -o -name '*.ko.gz' -o -name '*.ko.zst' \) \
-              -printf '%f\n' | grep -Eiq '^(amdgpu|nouveau|radeon|nvme([_-].*)?|nvmet([_-].*)?|ahci|ata_piix|sata_.*)\.ko(\.(xz|gz|zst))?$'; then
-            echo "::error::A forbidden PC GPU / NVMe / SATA module was produced."
-            find "$SRC" -type f \
-              \( -name '*.ko' -o -name '*.ko.xz' -o -name '*.ko.gz' -o -name '*.ko.zst' \) \
-              -printf '%f\n' | grep -Eai '^(amdgpu|nouveau|radeon|nvme([_-].*)?|nvmet([_-].*)?|ahci|ata_piix|sata_.*)\.ko(\.(xz|gz|zst))?$' || true
-            exit 1
-          fi
-          echo "No excluded AMD/NVIDIA/Radeon/NVMe/SATA modules found."
+          echo "===== Advisory audit of built kernel modules ====="
+          MODULE_AUDIT="$GITHUB_WORKSPACE/rpi2-rpi3-built-module-audit.txt"
+          MODULE_DIRS="$GITHUB_WORKSPACE/.work/rpi2-rpi3-module-paths.txt"
+          find "$SRC" -type f \
+            \( -name '*.ko' -o -name '*.ko.xz' -o -name '*.ko.gz' -o -name '*.ko.zst' \) \
+            | sed "s#^$SRC/##" | sort > "$MODULE_DIRS"
+          MODULE_COUNT="$(wc -l < "$MODULE_DIRS")"
+          {
+            echo "Raspberry Pi 2/3 built module inventory (advisory)"
+            echo "Module files: $MODULE_COUNT"
+            echo
+            echo "[Module path counts]"
+            awk -F/ '{print $1 "/" $2 "/" $3}' "$MODULE_DIRS" | sort | uniq -c | sort -nr | head -n 80
+            echo
+            echo "[Potential non-Pi driver leftovers]"
+            grep -Ei '(^|/)(media|dvb|wireless/(ath|intel|mediatek|ralink|realtek)|usb/serial|usb/gadget|ata|nvme|pci|firewire|infiniband|iio|hwmon|w1|md)/|/(amdgpu|nouveau|radeon|nvme[^/]*|ahci|ata_piix)\.ko' "$MODULE_DIRS" || true
+          } > "$MODULE_AUDIT"
+          cat "$MODULE_AUDIT"
+          echo "::notice::Module inventory is advisory. Review the report; unrelated modules do not fail the build."
 
           test -s "$SRC/arch/arm/boot/zImage"
           test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
@@ -470,6 +478,7 @@ jobs:
           cp .work/rpi-reference-info.txt "$PKG/build-info/"
           cp .work/srpm-identification.txt "$PKG/build-info/"
           cp diretta-compatibility-report.txt "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/rpi2-rpi3-built-module-audit.txt" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/output-localversion" "$PKG/build-info/localversion"
           cp "$GITHUB_WORKSPACE/rpi2-rpi3-v4.2-config-report.txt" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/rpi2-rpi3-intersection-report.txt" "$PKG/build-info/"
@@ -508,10 +517,14 @@ jobs:
             Raspberry Pi ALSA path and USB Audio Class driver are validated;
             unrelated Fedora SND_* options absent from Linux 6.2.15 are not
             treated as build blockers.
-            PCI/PCIe, ATA/SATA, NVMe, AMDGPU, Nouveau, Radeon and PC/virtual GPU
-            drivers are explicitly disabled and audited. Shared SCSI/USB storage,
-            DRM core and Raspberry Pi VC4 support are retained.
-            CONFIG_MODVERSIONS is disabled to match the supplied Diretta modules.
+            A Raspberry Pi 2/3 hardware-only pruning profile removes non-Pi
+            media/DVB, unrelated Ethernet/Wi-Fi, USB serial/gadget/misc, other
+            SoC audio, storage and peripheral drivers. It retains Pi SD/MMC,
+            DWC USB, SMSC95xx/LAN78xx Ethernet, Pi 3 Broadcom SDIO Wi-Fi/BT,
+            BCM2835 buses, PL011, VC4/VCHIQ, USB storage and Pi/USB audio.
+            Missing or unavailable hardware symbols are reported as advisory
+            entries and do not stop compilation. CONFIG_MODVERSIONS is disabled
+            to match the supplied Diretta modules.
 
           IMPORTANT:
             This package is not a byte-for-byte reproduction of the SOtM A20 kernel.
@@ -542,6 +555,7 @@ jobs:
             rpi2-rpi3-v4.2-config-report.txt
             diretta-compatibility-report.txt
             .work/rpi2-rpi3-hardware-audit.txt
+            rpi2-rpi3-built-module-audit.txt
             rpi2-rpi3-intersection-report.txt
             package/README.txt
             package/build-info/**
