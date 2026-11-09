@@ -118,6 +118,19 @@ if [[ -s "$PI_FRAGMENT" ]]; then
   bash scripts/kconfig/merge_config.sh -m -r .config "$PI_FRAGMENT"
 fi
 
+echo "===== 2.1 Ensure SD-card boot drivers are built in (only if in repo config and source) ====="
+for sym in MMC_BLOCK MMC_BCM2835; do
+  grep -Eq "^CONFIG_$sym=" "$BASE_CONFIG" || {
+    echo "::error::Repository Fedora config does not define required Pi SD option CONFIG_$sym."
+    exit 1
+  }
+  grep -Eq "^CONFIG_$sym=|^# CONFIG_$sym is not set" "$WORK/fedora-base-resolved.config" || {
+    echo "::error::Linux 6.2.15 source does not support repository option CONFIG_$sym."
+    exit 1
+  }
+  scripts/config --file .config --enable "$sym"
+done
+
 echo "===== 3. Apply only the A20 Diretta ABI fragment ====="
 bash scripts/kconfig/merge_config.sh -m -r .config "$ABI_CONFIG"
 
@@ -145,7 +158,10 @@ for setting in \
   CONFIG_HARDENED_USERCOPY=y \
   CONFIG_FORTIFY_SOURCE=y \
   CONFIG_HIGHMEM=y \
-  CONFIG_NEON=y; do
+  CONFIG_NEON=y \
+  CONFIG_MMC=y \
+  CONFIG_MMC_BLOCK=y \
+  CONFIG_MMC_BCM2835=y; do
   require_config "$setting"
 done
 
@@ -195,11 +211,11 @@ print("Preserved " + str(len(active)) + " enabled SND_USB options.")
 PY
 
 echo "===== 6. Verify Raspberry Pi boot hardware ====="
-for sym in MMC MMC_BLOCK MMC_BCM2835 USB USB_DWC2 SERIAL_AMBA_PL011 SERIAL_AMBA_PL011_CONSOLE; do
+for sym in USB USB_DWC2 SERIAL_AMBA_PL011 SERIAL_AMBA_PL011_CONSOLE; do
   if grep -Eq "^CONFIG_$sym=(y|m)$" .config; then
     grep -E "^CONFIG_$sym=(y|m)$" .config
   else
-    echo "::error::Required Pi boot symbol is not enabled: CONFIG_$sym"
+    echo "::error::Required Pi boot/I/O symbol is not enabled: CONFIG_$sym"
     exit 1
   fi
 done
