@@ -389,6 +389,7 @@ jobs:
           Fedora SRPM: $SRPM_NAME
 
           Boot image: boot/kernel7.img
+          Initramfs: boot/initramfs7 (generic initramfs built from target ARM modules)
           Pi 2B DTB: boot/bcm2836-rpi-2-b.dtb
           Modules: lib/modules/$KERNEL_RELEASE/
           Supplied Diretta modules:
@@ -426,4 +427,5 @@ jobs:
             rpi2b-v6-module-inventory.txt
             diretta-compatibility-report.txt
             package/README.txt
+            package/boot/initramfs7
             package/build-info/**
