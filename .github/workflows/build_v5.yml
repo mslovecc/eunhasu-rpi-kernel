@@ -318,7 +318,7 @@ jobs:
           # BusyBox 1.36.1 tc.c expects legacy CBQ UAPI definitions that are
           # unavailable in the Ubuntu 24.04 GitHub Actions headers.
           sed -i '/^CONFIG_TC=/d; /^# CONFIG_TC is not set$/d' .config
-          printf '%s\\n' '# CONFIG_TC is not set' >> .config
+          echo '# CONFIG_TC is not set' >> .config
           sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
           # Required initramfs applets, including PARTUUID lookup.
           for opt in BLKID SWITCH_ROOT MOUNT UMOUNT SLEEP MDEV; do
