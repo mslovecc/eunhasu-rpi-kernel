@@ -96,7 +96,10 @@ for item in \
   CONFIG_SMP=y \
   CONFIG_PREEMPT=y \
   CONFIG_MODULES=y \
-  CONFIG_MODULE_UNLOAD=y; do
+  CONFIG_MODULE_UNLOAD=y \
+  CONFIG_SOUND=y \
+  CONFIG_SND=m \
+  CONFIG_SND_PCM=m; do
   grep -qx "$item" .config || {
     echo "::error::Required setting did not survive Kconfig: $item"
     exit 1
