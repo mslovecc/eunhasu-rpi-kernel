@@ -403,6 +403,8 @@ jobs:
           install -m 0644 "$src/Module.symvers" "$pkg/build-info/Module.symvers"
           install -m 0644 "$src/System.map" "$pkg/build-info/System.map"
           cp .work/source-provenance.txt "$pkg/build-info/"
+          cp .work/config-provenance.txt "$pkg/build-info/"
+          cp .work/rpi-config-provenance.txt "$pkg/build-info/"
           cp .work/fedora-patch-stat.txt "$pkg/build-info/"
           cp .work/diretta/original.sha256 "$pkg/build-info/diretta-original.sha256"
           cp .work/diretta/*.attributes.txt "$pkg/build-info/"
@@ -426,7 +428,7 @@ jobs:
           Test on the target Pi 2 / Pi 3 before deployment.
           EOF
           tar -czf "rpi2-rpi3-diretta-$KERNEL_RELEASE.tar.gz" -C "$GITHUB_WORKSPACE" package
-          sha256sum "fedora-armv7-diretta-$KERNEL_RELEASE.tar.gz" > "fedora-armv7-diretta-$KERNEL_RELEASE.tar.gz.sha256"
+          sha256sum "rpi2-rpi3-diretta-$KERNEL_RELEASE.tar.gz" > "rpi2-rpi3-diretta-$KERNEL_RELEASE.tar.gz.sha256"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -435,13 +437,15 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           path: |
-            fedora-armv7-diretta-${{ env.KERNEL_RELEASE }}.tar.gz
-            fedora-armv7-diretta-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
+            rpi2-rpi3-diretta-${{ env.KERNEL_RELEASE }}.tar.gz
+            rpi2-rpi3-diretta-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
             rpi2-rpi3-diretta-v5.config
             package/README.txt
             package/boot/initramfs7
             package/boot/*.dtb
             package/boot/overlays/**
+            package/build-info/**
+            rpi2-rpi3-diretta-v5.config
             package/build-info/**
             .work/config-provenance.txt
             .work/rpi-config-provenance.txt
