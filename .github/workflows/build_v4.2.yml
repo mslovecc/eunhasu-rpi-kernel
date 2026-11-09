@@ -430,7 +430,7 @@ jobs:
             exit 1
           }
           echo "Installed kernel module files: $MODULE_COUNT"
-          find "$MODULE_DIR" -type f | grep -E '\.ko(\.(xz|gz|zst))?$' | sed 's#^.*/##' | head -n 30
+          find "$MODULE_DIR" -type f | grep -E '\.ko(\.(xz|gz|zst))?$' | sed 's#^.*/##' | sed -n '1,30p'
           (
             cd "$INITRD_ROOT"
             find . -print0 | LC_ALL=C sort -z \
