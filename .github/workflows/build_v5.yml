@@ -58,7 +58,7 @@ jobs:
           mkdir -p .work/diretta
           for f in modules/diretta/*.ko; do
             n="$(basename "$f")"
-            arm-linux-gnueabihf-nm -u "$f" 2>/dev/null |
+            nm -u "$f" 2>/dev/null |
               awk '$1 == "U" {print $2}' | sort -u > ".work/diretta/$n.undefined"
           done
           sha256sum modules/diretta/*.ko | tee .work/diretta/original.sha256
