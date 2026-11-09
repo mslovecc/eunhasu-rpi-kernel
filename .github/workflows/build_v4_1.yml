@@ -403,6 +403,22 @@ jobs:
             "$GITHUB_WORKSPACE/$ABI_FRAGMENT"
 
           # ----------------------------------------------
+          # 8.3 Import Raspberry Pi 2B/3B hardware drivers
+          # Extracted from the official Raspberry Pi
+          # bcm2709_defconfig (rpi-6.1.y), without importing
+          # its unrelated ABI, scheduler, filesystem or
+          # general-purpose configuration.
+          # ----------------------------------------------
+
+          HARDWARE_FRAGMENT="config/rpi2-rpi3-hardware.fragment"
+          test -s "$GITHUB_WORKSPACE/$HARDWARE_FRAGMENT"
+
+          bash scripts/kconfig/merge_config.sh \
+            -m -r \
+            .config \
+            "$GITHUB_WORKSPACE/$HARDWARE_FRAGMENT"
+
+          # ----------------------------------------------
           # 8.4 Configure kernel options
           # ----------------------------------------------
 
@@ -457,6 +473,45 @@ jobs:
           make ARCH=arm \
             CROSS_COMPILE="$CROSS_COMPILE" \
             syncconfig
+
+          echo
+          echo "===== Raspberry Pi 2B/3B hardware driver validation ====="
+
+          for sym in \
+            CONFIG_USB_DWCOTG=y \
+            CONFIG_USB_DWC2=y \
+            CONFIG_USB_STORAGE=y \
+            CONFIG_USB_LAN78XX=y \
+            CONFIG_USB_NET_SMSC95XX=y \
+            CONFIG_RASPBERRYPI_GPIOMEM=m \
+            CONFIG_SPI_SPIDEV=m \
+            CONFIG_FB_BCM2708=y \
+            CONFIG_BACKLIGHT_RPI=m \
+            CONFIG_SENSORS_RASPBERRYPI_HWMON=m \
+            CONFIG_RPI_POE_POWER=m \
+            CONFIG_MFD_RASPBERRYPI_POE_HAT=m \
+            CONFIG_VIDEO_BCM2835_UNICAM=m \
+            CONFIG_VIDEO_IMX219=m \
+            CONFIG_VIDEO_OV5647=m \
+            CONFIG_SND_BCM2708_SOC_HIFIBERRY_DAC=m \
+            CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUS=m \
+            CONFIG_SND_BCM2708_SOC_HIFIBERRY_DIGI=m \
+            CONFIG_SND_BCM2708_SOC_JUSTBOOM_DAC=m \
+            CONFIG_SND_BCM2708_SOC_IQAUDIO_DAC=m \
+            CONFIG_SND_BCM2708_SOC_RPI_DAC=m; do
+            grep -qx "$sym" .config || {
+              echo "::error::Raspberry Pi hardware setting missing after olddefconfig: $sym"
+              exit 1
+            }
+            echo "OK: $sym"
+          done
+
+          # These settings are ABI-critical and must never be imported
+          # from the upstream bcm2709_defconfig.
+          if grep -qx 'CONFIG_MODVERSIONS=y' .config; then
+            echo "::error::CONFIG_MODVERSIONS must remain disabled for original Diretta modules."
+            exit 1
+          fi
 
           echo
           echo "===== Raspberry Pi 2 boot-critical configuration ====="
