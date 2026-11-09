@@ -215,7 +215,10 @@ jobs:
           grep -qx 'CONFIG_MODULES=y' .config
           grep -qx 'CONFIG_MODULE_UNLOAD=y' .config
           grep -qx '# CONFIG_MODVERSIONS is not set' .config
-          grep -qx '# CONFIG_MODULE_SIG_FORCE is not set' .config
+          # MODULE_SIG_FORCE is not a guaranteed Kconfig symbol in this
+          # Raspberry Pi kernel tree. Do not make its textual presence a gate:
+          # CONFIG_MODULE_SIG=n (reported above) already means signing is not
+          # enabled, and absent optional symbols must not stop the build.
           grep -qx 'CONFIG_LOCALVERSION="-215.fc36.armv7hl"' .config
 
           ACTUAL_RELEASE="$(make -s ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
