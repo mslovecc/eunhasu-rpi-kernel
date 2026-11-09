@@ -532,6 +532,7 @@ cp localversion "$GITHUB_WORKSPACE/output-localversion"
   echo "Raspberry Pi 2/3 Fedora ARMv7 configuration audit"
   echo "Base: repository sources/kernel-srpm/kernel-armv7hl-fedora.config"
   echo "Pi reference: official bcm2709_defconfig + matching 6.2.15 bcm2835_defconfig"
+  echo "Pi hardware supplement: config/rpi2-rpi3-hardware.fragment"
   echo "Kernel release: $ACTUAL_RELEASE"
   echo
   echo "=== Diretta ABI settings ==="
