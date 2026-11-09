@@ -483,6 +483,7 @@ jobs:
           install -m 0644 "$GITHUB_WORKSPACE/.work/rpi2-rpi3-hardware-audit.txt" \
             "$PKG/build-info/rpi2-rpi3-hardware-audit.txt"
           cp .work/rpi-reference-info.txt "$PKG/build-info/"
+          cp config/rpi2-rpi3-hardware.fragment "$PKG/build-info/"
           cp .work/srpm-identification.txt "$PKG/build-info/"
           cp diretta-compatibility-report.txt "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/rpi2-rpi3-built-module-audit.txt" "$PKG/build-info/"
