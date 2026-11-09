@@ -227,17 +227,18 @@ keep = {
     # BCM2835/BCM2836/BCM2837 platform and VideoCore
     "ARCH_BCM2835", "ARCH_BCM", "ARCH_MULTI_V7", "ARCH_MULTIPLATFORM",
     "BCM2835_MBOX", "BCM2835_POWER", "BCM2835_THERMAL", "BCM2835_WDT",
-    "BCM2835_VCHIQ", "BCM2835_DMA", "BCM2835_RNG",
+    "BCM2835_VCHIQ", "VCHIQ", "BCM2835_DMA", "BCM2835_RNG",
     "DRM", "DRM_KMS_HELPER", "DRM_GEM_SHMEM_HELPER", "DRM_VC4",
     "DRM_DISPLAY_HELPER", "DRM_PANEL", "DRM_BRIDGE",
     # SD/MMC, USB host/storage and Pi 2/3 USB Ethernet
     "MMC", "MMC_BLOCK", "MMC_BCM2835", "MMC_SDHCI", "MMC_SDHCI_PLTFM",
     "USB", "USB_COMMON", "USB_SUPPORT", "USB_DWC2", "USB_DWCOTG",
-    "USB_STORAGE", "USB_UAS", "USB_HID", "USB_USBNET",
+    "USB_STORAGE", "USB_UAS", "USB_HID", "USB_USBNET", "USB_NET_DRIVERS",
     "USB_NET_SMSC95XX", "USB_LAN78XX",
     # Pi 3 on-board Broadcom Wi-Fi and Bluetooth
     "BRCMFMAC", "BRCMFMAC_SDIO", "BRCMFMAC_PROTO_BCDC",
     "BRCMFMAC_PROTO_MSGBUF", "BRCMUTIL", "CFG80211", "MAC80211",
+    "WLAN", "WLAN_VENDOR_BROADCOM",
     "BT", "BT_BCM", "BT_HCIUART", "BT_HCIUART_BCM",
     # Pi SoC buses, pins, clocks and serial console
     "I2C", "I2C_CHARDEV", "I2C_BCM2835",
@@ -322,6 +323,8 @@ def prune(rel, sym):
 
     # Do not build other SoC audio codec/CPU-DAI drivers or PCI/ISA sound cards.
     if rel.startswith("sound/soc/"):
+        if rel in {"sound/soc/Kconfig", "sound/soc/Makefile"}:
+            return False
         return not rel.startswith("sound/soc/bcm/")
     if rel.startswith(("sound/pci/", "sound/isa/")):
         return True
