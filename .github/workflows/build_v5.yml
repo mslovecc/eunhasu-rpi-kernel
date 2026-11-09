@@ -131,7 +131,30 @@ jobs:
           printf '%s\n' "Fedora SRPM: $SRPM_NAME" "Source archive: $SOURCE_NAME" "Fedora patch: patch-6.2-redhat.patch" > "$GITHUB_WORKSPACE/.work/source-provenance.txt"
           git diff --stat | tee "$GITHUB_WORKSPACE/.work/fedora-patch-stat.txt"
 
-      - name: Configure Fedora ARMv7 baseline plus Raspberry Pi board support
+      - name: Generate official Pi 2/3 reference defconfig from the Fedora-patched source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          src="$GITHUB_WORKSPACE/.work/kernel/linux-6.2.15"
+          ref="$GITHUB_WORKSPACE/.work/rpi2709-reference"
+          mkdir -p "$ref"
+          # Official Raspberry Pi 32-bit Pi 2/Pi 3 baseline is bcm2709_defconfig.
+          # Generate it from THIS exact Fedora-patched 6.2.15 tree, not from
+          # raspberrypi/linux and not from a different kernel release.
+          make -C "$src" O="$ref" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" bcm2709_defconfig
+          test -s "$ref/.config"
+          grep -q '^CONFIG_ARCH_BCM2835=y' "$ref/.config"
+          grep -q '^CONFIG_SMP=y' "$ref/.config"
+          cp "$ref/.config" "$GITHUB_WORKSPACE/.work/bcm2709-reference.config"
+          cp "$src/arch/arm/configs/bcm2709_defconfig" "$GITHUB_WORKSPACE/.work/bcm2709_defconfig.source"
+          {
+            echo "Official RPi defconfig: arch/arm/configs/bcm2709_defconfig"
+            echo "Generated using the Fedora SRPM-patched Linux 6.2.15 source tree."
+            echo "Reference config is used as a hardware feature delta only."
+            echo "Fedora ARMv7 config remains the base for module ABI preservation."
+          } > "$GITHUB_WORKSPACE/.work/rpi-config-provenance.txt"
+
+      - name: Configure Fedora ARMv7 ABI baseline with official Pi 2/3 hardware delta
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -139,30 +162,64 @@ jobs:
           cd "$src"
           cp "$GITHUB_WORKSPACE/.work/fedora-armv7hl.config" .config
 
-          # Fedora's armv7hl config is the ABI-oriented baseline. Add only
-          # Raspberry Pi 2/3 platform/device support required by this target.
-          cat > "$GITHUB_WORKSPACE/.work/rpi2-rpi3.fragment" <<'EOF'
-          CONFIG_ARCH_MULTI_V6=y
-          CONFIG_ARCH_MULTI_V7=y
-          CONFIG_ARCH_BCM2835=y
-          CONFIG_BCM2835_MBOX=y
-          CONFIG_BCM2835_WDT=y
-          CONFIG_BCM2835_POWER=y
-          CONFIG_BCM2835_THERMAL=y
+          # Build a selective delta from the official bcm2709_defconfig generated
+          # above. Do NOT merge the entire bcm2709 config: that would replace
+          # many Fedora ABI-relevant choices (PREEMPT, SMP, module/signing,
+          # security and compiler/runtime options).
+          python3 - "$GITHUB_WORKSPACE/.work/bcm2709-reference.config" "$GITHUB_WORKSPACE/.work/fedora-armv7hl.config" "$GITHUB_WORKSPACE/.work/rpi-hardware.fragment" <<'PY'
+          import re, sys
+          ref_path, fedora_path, out_path = sys.argv[1:]
+          ref = {}
+          fedora = {}
+          pat = re.compile(r'^(CONFIG_[A-Z0-9_]+)=(.*)$')
+          unset = re.compile(r'^# (CONFIG_[A-Z0-9_]+) is not set$')
+          for path, dst in ((ref_path, ref), (fedora_path, fedora)):
+              for line in open(path, encoding="utf-8"):
+                  m = pat.match(line)
+                  if m:
+                      dst[m.group(1)] = m.group(2)
+                      continue
+                  m = unset.match(line)
+                  if m:
+                      dst[m.group(1)] = "n"
+          # Keep the delta focused on Pi platform and its common onboard buses,
+          # boot/storage, networking, display, sound and hardware control.
+          prefixes = (
+              "ARCH_BCM", "BCM283", "BCM270", "MMC", "SDHCI", "USB",
+              "MUSB", "DWC", "PHY", "PINCTRL", "GPIO", "I2C", "SPI",
+              "PWM", "THERMAL", "WATCHDOG", "SERIAL_AMBA_PL011",
+              "TTYAMA", "SND_BCM", "SND_SOC_BCM", "SND_SOC_SIMPLE",
+              "REGULATOR", "COMMON_CLK", "CLK_BCM", "MAILBOX",
+              "RASPBERRYPI", "VCHIQ", "FB_BCM", "DRM", "FRAMEBUFFER",
+              "EXT4_FS", "BLK_DEV_INITRD", "RD_GZIP", "DEVTMPFS",
+              "DEVTMPFS_MOUNT", "FAT_FS", "VFAT_FS", "NLS_CODEPAGE",
+              "NLS_ISO8859", "NLS_UTF8", "NET", "INET", "IP_PNP",
+              "ROOT_NFS", "NFS_FS", "NFS_V4"
+          )
+          selected = []
+          for key, value in sorted(ref.items()):
+              if not key.startswith("CONFIG_"):
+                  continue
+              name = key[len("CONFIG_"):]
+              if not name.startswith(prefixes):
+                  continue
+              if value == "n" or fedora.get(key) == value:
+                  continue
+              selected.append((key, value))
+          with open(out_path, "w", encoding="utf-8") as f:
+              f.write("# Selective hardware delta from bcm2709_defconfig on Fedora-patched 6.2.15.\n")
+              for key, value in selected:
+                  f.write(f"{key}={value}\n" if value != "n" else f"# {key} is not set\n")
+          print(f"Selected {len(selected)} Pi hardware config differences")
+          PY
+          cp "$GITHUB_WORKSPACE/.work/rpi-hardware.fragment" "$GITHUB_WORKSPACE/rpi2-rpi3-hardware.fragment"
+          scripts/kconfig/merge_config.sh -m .config "$GITHUB_WORKSPACE/.work/rpi-hardware.fragment"
+
+          # Explicit boot and root-filesystem requirements for this package.
+          cat > "$GITHUB_WORKSPACE/.work/boot-storage.fragment" <<'EOF'
           CONFIG_MMC=y
           CONFIG_MMC_BLOCK=y
           CONFIG_MMC_BCM2835=y
-          CONFIG_PINCTRL=y
-          CONFIG_PINCTRL_BCM2835=y
-          CONFIG_SERIAL_AMBA_PL011=y
-          CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
-          CONFIG_USB=y
-          CONFIG_USB_DWCOTG=y
-          CONFIG_USB_USBNET=y
-          CONFIG_USB_NET_SMSC95XX=m
-          CONFIG_MII=y
-          CONFIG_NET=y
-          CONFIG_INET=y
           CONFIG_EXT4_FS=y
           CONFIG_DEVTMPFS=y
           CONFIG_DEVTMPFS_MOUNT=y
@@ -170,17 +227,11 @@ jobs:
           CONFIG_RD_GZIP=y
           CONFIG_MODULES=y
           CONFIG_MODULE_UNLOAD=y
-          CONFIG_SMP=y
-          CONFIG_PREEMPT=y
-          # Match the supplied Diretta objects: they do not carry __versions.
-          # Do not enable CONFIG_MODVERSIONS to make the CRC model differ.
-          # CONFIG_MODVERSIONS is not set
-          # Do not require signatures for the original vendor modules.
-          # CONFIG_MODULE_SIG_FORCE is not set
           EOF
-          scripts/kconfig/merge_config.sh -m .config "$GITHUB_WORKSPACE/.work/rpi2-rpi3.fragment"
+          scripts/kconfig/merge_config.sh -m .config "$GITHUB_WORKSPACE/.work/boot-storage.fragment"
+
+          # Preserve the original Diretta vermagic and its no-CRC module model.
           scripts/config --file .config --set-str LOCALVERSION "" --disable LOCALVERSION_AUTO --disable MODVERSIONS --disable MODULE_SIG_FORCE
-          # Fedora release identity from kernel.spec: 6.2.15 + 215.fc36.armv7hl.
           sed -i 's/^EXTRAVERSION.*/EXTRAVERSION = -215.fc36.armv7hl/' Makefile
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
           make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" syncconfig
@@ -191,13 +242,26 @@ jobs:
             echo "::error::Expected $EXPECTED_RELEASE, got $actual"
             exit 1
           }
-          for sym in CONFIG_ARCH_BCM2835 CONFIG_BCM2835_MBOX CONFIG_MMC_BCM2835 CONFIG_USB_DWCOTG CONFIG_USB_NET_SMSC95XX CONFIG_EXT4_FS CONFIG_BLK_DEV_INITRD CONFIG_RD_GZIP CONFIG_MODULES CONFIG_MODULE_UNLOAD CONFIG_SMP CONFIG_PREEMPT; do
+          for sym in CONFIG_ARCH_BCM2835 CONFIG_BCM2835_MBOX CONFIG_MMC CONFIG_MMC_BLOCK CONFIG_MMC_BCM2835 CONFIG_EXT4_FS CONFIG_BLK_DEV_INITRD CONFIG_RD_GZIP CONFIG_MODULES CONFIG_MODULE_UNLOAD CONFIG_SMP; do
             grep -Eq "^$sym=(y|m)$" .config || {
-              echo "::error::Required target config absent after olddefconfig: $sym"
+              echo "::error::Required Pi/Fedora config absent after olddefconfig: $sym"
               exit 1
             }
           done
-          ! grep -q '^CONFIG_MODVERSIONS=y' .config
+          grep -q '^CONFIG_MODVERSIONS=y' .config && {
+            echo "::error::CONFIG_MODVERSIONS must remain disabled for these original vendor modules."
+            exit 1
+          }
+          # Verify the final Pi platform essentials against the generated
+          # official defconfig rather than assuming the hand-written fragment.
+          for sym in CONFIG_ARCH_BCM2835 CONFIG_BCM2835_MBOX CONFIG_MMC_BCM2835 CONFIG_USB_DWCOTG CONFIG_PINCTRL_BCM2835 CONFIG_SERIAL_AMBA_PL011; do
+            refval="$(grep -E "^$sym=" "$GITHUB_WORKSPACE/.work/bcm2709-reference.config" | tail -n1 || true)"
+            finalval="$(grep -E "^$sym=" .config | tail -n1 || true)"
+            if [[ -n "$refval" && "$refval" == *"=y" && "$finalval" != "$refval" ]]; then
+              echo "::error::Final config lost official Pi setting $sym ($refval)"
+              exit 1
+            fi
+          done
           cp .config "$GITHUB_WORKSPACE/fedora-armv7-rpi-v5.config"
           cp .config "$GITHUB_WORKSPACE/.work/final.config"
           echo "KERNEL_RELEASE=$actual" >> "$GITHUB_ENV"
