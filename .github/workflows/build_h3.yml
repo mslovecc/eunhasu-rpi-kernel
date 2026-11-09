@@ -1,0 +1,224 @@
+name: Build Orange Pi PC H3 Kernel / Diretta
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Parallel build jobs (0 = auto)"
+        required: false
+        default: "0"
+        type: string
+      verify_diretta_symbols:
+        description: "Fail if any original Diretta import is absent from Module.symvers"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orangepi-pc-h3-kernel-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Linux 6.2.15 / Orange Pi PC / H3 / Original Diretta KO
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    env:
+      KERNEL_VERSION: "6.2.15"
+      KERNEL_RELEASE: "6.2.15-215.fc36.armv7hl"
+      SRPM_NAME: "kernel-6.2.15-100.fc36.src.rpm"
+      SOURCE_TARBALL: "linux-6.2.15.tar.xz"
+      SRPM_SHA256: "f2f2fef31c54111720782b7867bc727d4f67866864a0e54c9dab9c606737f570"
+      SOURCE_SHA256: "bc2d24c3a8bba92f92f3b480381fe7c80bb85d694fda656a1e030f55b926c766"
+      FALLBACK_BASE_URL: "https://s2.bravo123.top"
+      SUPPORT_DIR: "sources/kernel-srpm"
+      REPO_SOURCE_DIR: "sources/dist"
+      EXPECTED_VERMAGIC: "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
+      VERIFY_DIRETTA_SYMBOLS: ${{ inputs.verify_diretta_symbols }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            bc bison build-essential ca-certificates cpio curl \
+            device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf \
+            git kmod libelf-dev libncurses-dev libssl-dev make patch \
+            python3 rpm rsync xz-utils binutils-arm-linux-gnueabihf
+
+          arm-linux-gnueabihf-gcc --version | head -n 1
+          echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
+
+      - name: Validate scripts and repository inputs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for f in \
+            scripts/download-sources.sh \
+            scripts/prepare-h3-config.sh \
+            scripts/verify-h3-config.sh \
+            scripts/verify-diretta-abi.sh \
+            scripts/package-h3.sh \
+            config/h3-orangepi-pc.fragment \
+            config/h3-diretta.fragment \
+            "$SUPPORT_DIR/kernel.spec" \
+            "$SUPPORT_DIR/patch-6.2-redhat.patch" \
+            "$SUPPORT_DIR/kernel-armv7hl-fedora.config" \
+            "$SUPPORT_DIR/Makefile.rhelver" \
+            "$SUPPORT_DIR/SHA256SUMS" \
+            modules/diretta/alsa_bridge.ko \
+            modules/diretta/diretta_direct.ko; do
+            test -s "$f" || { echo "::error::Missing/empty required file: $f"; exit 1; }
+          done
+
+          chmod 0755 \
+            scripts/download-sources.sh \
+            scripts/prepare-h3-config.sh \
+            scripts/verify-h3-config.sh \
+            scripts/verify-diretta-abi.sh \
+            scripts/package-h3.sh
+
+          for f in scripts/*.sh; do
+            bash -n "$f"
+          done
+
+          (
+            cd "$SUPPORT_DIR"
+            sha256sum --check SHA256SUMS
+          )
+
+          test -x scripts/download-sources.sh
+          test -x scripts/prepare-h3-config.sh
+          test -x scripts/verify-h3-config.sh
+          test -x scripts/verify-diretta-abi.sh
+          test -x scripts/package-h3.sh
+
+      - name: Download Fedora SRPM and Linux source (repository first, fallback second)
+        shell: bash
+        env:
+          REPOSITORY_RAW_BASE: https://raw.githubusercontent.com/${{ github.repository }}/${{ github.ref_name }}
+        run: |
+          set -Eeuo pipefail
+          export GITHUB_WORKSPACE="$GITHUB_WORKSPACE"
+          export REPOSITORY_RAW_BASE
+          bash scripts/download-sources.sh
+
+      - name: Extract and verify Fedora SRPM payload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/srpm-payload
+          (
+            cd .work/srpm-payload
+            rpm2cpio "../downloads/$SRPM_NAME" | cpio -idm --quiet
+          )
+
+          SPEC="$(find .work/srpm-payload -type f -name kernel.spec -print -quit)"
+          PATCH="$(find .work/srpm-payload -type f -name patch-6.2-redhat.patch -print -quit)"
+          CONFIG="$(find .work/srpm-payload -type f -name kernel-armv7hl-fedora.config -print -quit)"
+          RHELVER="$(find .work/srpm-payload -type f -name Makefile.rhelver -print -quit)"
+
+          for f in "$SPEC" "$PATCH" "$CONFIG" "$RHELVER"; do
+            test -s "$f" || { echo "::error::Missing SRPM payload file: $f"; exit 1; }
+          done
+
+          cmp "$SPEC" "$SUPPORT_DIR/kernel.spec"
+          cmp "$PATCH" "$SUPPORT_DIR/patch-6.2-redhat.patch"
+          cmp "$CONFIG" "$SUPPORT_DIR/kernel-armv7hl-fedora.config"
+          cmp "$RHELVER" "$SUPPORT_DIR/Makefile.rhelver"
+
+          rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE}\n' ".work/downloads/$SRPM_NAME" \
+            | tee .work/srpm-identification.txt
+          grep -qx 'kernel 6.2.15-100.fc36' .work/srpm-identification.txt
+
+      - name: Extract Linux source and apply Fedora patch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/source
+          tar -xJf ".work/downloads/$SOURCE_TARBALL" -C .work/source
+          SRC="$GITHUB_WORKSPACE/.work/source/linux-6.2.15"
+          test -s "$SRC/Makefile"
+          test -s "$SRC/arch/arm/boot/dts/sun8i-h3-orangepi-pc.dts"
+          test -s "$SRC/arch/arm/boot/dts/sun8i-h3.dtsi"
+
+          VERSION="$(make -s -C "$SRC" ARCH=arm kernelversion)"
+          [[ "$VERSION" == "$KERNEL_VERSION" ]] || {
+            echo "::error::Unexpected Linux source version: $VERSION"
+            exit 1
+          }
+
+          patch --directory="$SRC" --strip=1 --forward \
+            < .work/srpm-payload/patch-6.2-redhat.patch
+
+          install -m 0644 "$SUPPORT_DIR/Makefile.rhelver" "$SRC/Makefile.rhelver"
+          cmp .work/srpm-payload/Makefile.rhelver "$SRC/Makefile.rhelver"
+
+          echo "SRC=$SRC" >> "$GITHUB_ENV"
+
+      - name: Prepare Fedora ARMv7 + Orange Pi PC + Diretta config
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash scripts/prepare-h3-config.sh "$SRC" "$KERNEL_RELEASE"
+          bash scripts/verify-h3-config.sh "$SRC" "$KERNEL_RELEASE"
+
+      - name: Build zImage, H3 DTBs and kernel modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$SRC"
+
+          JOBS="${{ inputs.jobs }}"
+          if [[ "$JOBS" == "0" ]]; then
+            JOBS="$(nproc)"
+          fi
+          [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::Invalid build jobs value: $JOBS"
+            exit 1
+          }
+
+          make -j"$JOBS" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            zImage dtbs modules
+
+          test -s arch/arm/boot/zImage
+          test -s arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb
+          test -s Module.symvers
+          test -s System.map
+
+          file arch/arm/boot/zImage \
+            arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb
+
+      - name: Install modules, check Diretta ABI and package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/package-root/lib/modules/"$KERNEL_RELEASE"
+          bash scripts/package-h3.sh "$SRC" "$KERNEL_RELEASE"
+          bash scripts/verify-diretta-abi.sh "$SRC" "$GITHUB_WORKSPACE/package-orangepi-pc"
+
+      - name: Upload Orange Pi PC package
+        uses: actions/upload-artifact@v4
+        with:
+          name: orangepi-pc-h3-kernel-${{ env.KERNEL_RELEASE }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            orangepi-pc-h3-kernel-${{ env.KERNEL_RELEASE }}.tar.gz
+            orangepi-pc-h3-kernel-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
+            output-orangepi-pc.config
+            output-orangepi-pc.localversion
+            diretta-h3-compatibility-report.txt
+            package-orangepi-pc/README-INSTALL.txt
+            package-orangepi-pc/build-info/**

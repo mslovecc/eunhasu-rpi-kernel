@@ -1,0 +1,27 @@
+# Diretta binary-module compatibility settings.
+# Do NOT compile or modify the supplied Diretta .ko files.
+# This fragment preserves the relevant settings from the tested v4 setup.
+
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+# CONFIG_MODVERSIONS is not set
+
+CONFIG_PREEMPT=y
+CONFIG_CPU_V7=y
+CONFIG_SMP=y
+CONFIG_AEABI=y
+# CONFIG_THUMB2_KERNEL is not set
+
+CONFIG_SND=m
+CONFIG_SND_TIMER=m
+CONFIG_SND_PCM=m
+CONFIG_SND_HWDEP=m
+CONFIG_SND_PROC_FS=y
+CONFIG_SND_PCM_TIMER=y
+CONFIG_SND_DYNAMIC_MINORS=y
+
+CONFIG_FRAME_POINTER=y
+CONFIG_HARDENED_USERCOPY=y
+CONFIG_FORTIFY_SOURCE=y
+CONFIG_HIGHMEM=y
+CONFIG_NEON=y

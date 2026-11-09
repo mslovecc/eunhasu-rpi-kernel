@@ -1,0 +1,65 @@
+# Orange Pi PC (Allwinner H3) board support.
+# This fragment is merged AFTER the Fedora ARMv7 config to preserve
+# the broad ARMv7 kernel configuration used as the Diretta ABI baseline.
+
+CONFIG_ARCH_SUNXI=y
+CONFIG_MACH_SUN8I=y
+CONFIG_CPU_V7=y
+CONFIG_AEABI=y
+CONFIG_SMP=y
+
+# Match the original Diretta module vermagic ("preempt").
+CONFIG_PREEMPT=y
+# CONFIG_PREEMPT_VOLUNTARY is not set
+# CONFIG_PREEMPT_NONE is not set
+# CONFIG_PREEMPT_DYNAMIC is not set
+
+# SD card is the root/boot medium. These must be built into the kernel
+# because this first-stage package intentionally does not replace initramfs.
+CONFIG_MMC=y
+CONFIG_MMC_BLOCK=y
+CONFIG_MMC_SUNXI=y
+CONFIG_EXT4_FS=y
+
+# Device management and root filesystem support.
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_RD_GZIP=y
+CONFIG_TMPFS=y
+CONFIG_SQUASHFS=m
+CONFIG_BLK_DEV_LOOP=m
+
+# Orange Pi PC serial console (Allwinner UART uses DesignWare APB UART).
+CONFIG_SERIAL_8250=y
+CONFIG_SERIAL_8250_CONSOLE=y
+CONFIG_SERIAL_8250_DW=y
+
+# H3 GMAC / PHY. Keep the MAC built in; PHY drivers may be modules.
+CONFIG_NETDEVICES=y
+CONFIG_ETHERNET=y
+CONFIG_PHYLIB=y
+CONFIG_DWMAC_SUN8I=y
+CONFIG_ICPLUS_PHY=m
+CONFIG_REALTEK_PHY=m
+
+# USB host ports.
+CONFIG_USB=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_OHCI_HCD=y
+CONFIG_USB_EHCI_HCD_PLATFORM=y
+CONFIG_USB_OHCI_HCD_PLATFORM=y
+CONFIG_USB_STORAGE=m
+
+# H3 pin control / regulator infrastructure.
+CONFIG_PINCTRL_SUNXI=y
+CONFIG_PINCTRL_SUN8I_H3=y
+CONFIG_REGULATOR=y
+CONFIG_REGULATOR_SY8106A=y
+CONFIG_MFD_SYSCON=y
+
+# Keep module loading compatible with the supplied, unsigned Diretta modules.
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+# CONFIG_MODULE_SIG_FORCE is not set
+# CONFIG_MODVERSIONS is not set
