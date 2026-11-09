@@ -252,18 +252,25 @@ jobs:
             --enable MODULE_COMPRESS \
             --enable MODULE_COMPRESS_XZ
 
-          # Explicitly disable PC/server GPU drivers and optional network protocols.
+          # Explicitly disable unrelated PC/server GPU drivers and optional
+          # network protocols. Do NOT blacklist ALSA or USB audio drivers.
           for sym in \
             DRM_AMDGPU DRM_RADEON DRM_MGAG200 DRM_NOUVEAU DRM_I915 \
             DRM_AST DRM_BOCHS DRM_QXL DRM_VIRTIO_GPU DRM_VMWGFX \
-            DRM_GMA500 DRM_CIRRUS_QEMU DRM_VBOXVIDEO MPTCP MCTP \
-            SND_MTPAV SND_SERIAL_U16550 SND_SERIAL_GENERIC SND_MPU401 \
-            SND_USB_UA101 SND_USB_6FIRE SND_USB_HIFACE SND_BCD2000 \
-            SND_USB_LINE6 SND_USB_POD SND_USB_PODHD SND_USB_TONEPORT \
-            SND_USB_VARIAX SND_SEQ_VIRMIDI SND_DUMMY SND_ALOOP \
-            SND_VIRMIDI SND_SEQ_DUMMY; do
+            DRM_GMA500 DRM_CIRRUS_QEMU DRM_VBOXVIDEO MPTCP MCTP; do
             scripts/config --file .config --disable "$sym"
           done
+
+          # This is an audio-focused kernel. Enable every USB sound driver
+          # declared by this kernel source as a module, including vendor-specific
+          # interfaces (UA-101, 6fire, Hiface, Line6, POD, TonePort, etc.).
+          while IFS= read -r sym; do
+            [[ -n "$sym" ]] || continue
+            scripts/config --file .config --module "$sym"
+          done < <(
+            grep -RhoE '^config SND_USB_[A-Z0-9_]+' sound/ \
+              --include='Kconfig*' | awk '{print $2}' | sort -u
+          )
 
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
@@ -316,12 +323,6 @@ jobs:
               "DRM_I915", "DRM_AST", "DRM_BOCHS", "DRM_QXL",
               "DRM_VIRTIO_GPU", "DRM_VMWGFX", "DRM_GMA500",
               "DRM_CIRRUS_QEMU", "DRM_VBOXVIDEO", "MPTCP", "MCTP",
-              "SND_MTPAV", "SND_SERIAL_U16550", "SND_SERIAL_GENERIC",
-              "SND_MPU401", "SND_USB_UA101", "SND_USB_6FIRE",
-              "SND_USB_HIFACE", "SND_BCD2000", "SND_USB_LINE6",
-              "SND_USB_POD", "SND_USB_PODHD", "SND_USB_TONEPORT",
-              "SND_USB_VARIAX", "SND_SEQ_VIRMIDI", "SND_DUMMY",
-              "SND_ALOOP", "SND_VIRMIDI", "SND_SEQ_DUMMY",
           }
           enabled = [(n, values.get(n, "n")) for n in sorted(forbidden)
                      if values.get(n, "n") in ("y", "m")]
