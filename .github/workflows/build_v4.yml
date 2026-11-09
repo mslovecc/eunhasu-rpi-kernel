@@ -483,6 +483,7 @@ jobs:
             CONFIG_DEVTMPFS_MOUNT=y \
             CONFIG_BINFMT_ELF=y \
             CONFIG_BINFMT_SCRIPT=y \
+            CONFIG_AEABI=y \
             CONFIG_VFP=y \
             CONFIG_VFPv3=y \
             CONFIG_NEON=y \
