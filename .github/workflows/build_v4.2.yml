@@ -510,9 +510,10 @@ jobs:
 
           Configuration design:
             The repository Fedora ARMv7 config is the only base .config.
-            Official bcm2709_defconfig and matching 6.2.15 bcm2835_defconfig are
-            references only; only supported symbols present in the repository
-            config are selected.
+            Official bcm2709_defconfig, matching 6.2.15 bcm2835_defconfig and
+            config/rpi2-rpi3-hardware.fragment are hardware references/supplements;
+            only symbols present in the Fedora repository config and recognized
+            by this source are applied.
             The A20 fragment contains Diretta ABI settings only. The required
             Raspberry Pi ALSA path and USB Audio Class driver are validated;
             unrelated Fedora SND_* options absent from Linux 6.2.15 are not
@@ -523,8 +524,9 @@ jobs:
             DWC USB, SMSC95xx/LAN78xx Ethernet, Pi 3 Broadcom SDIO Wi-Fi/BT,
             BCM2835 buses, PL011, VC4/VCHIQ, Pi camera (BCM2835/OV5647/IMX219),
             Pi touchscreen/sensors/power options, USB storage and Pi/USB audio.
-            Missing or unavailable hardware symbols are reported as advisory
-            entries and do not stop compilation. CONFIG_MODVERSIONS is disabled
+            Missing or unavailable hardware symbols (including legacy framebuffer,
+            optional camera and I2S HAT options) are reported as advisory entries
+            and do not stop compilation. CONFIG_MODVERSIONS is disabled
             to match the supplied Diretta modules.
 
           IMPORTANT:
