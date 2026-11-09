@@ -51,7 +51,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             bc bison build-essential ca-certificates cpio curl \
-            device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf \
+            device-tree-compiler dwarves dracut-core flex gcc-arm-linux-gnueabihf \
             git kmod libelf-dev libssl-dev make patch python3 rpm rsync \
             xz-utils binutils-arm-linux-gnueabihf
           arm-linux-gnueabihf-gcc --version | sed -n '1p'
@@ -352,6 +352,22 @@ jobs:
           install -m 0644 modules/diretta/alsa_bridge.ko "$MODDIR/extra/diretta/"
           install -m 0644 modules/diretta/diretta_direct.ko "$MODDIR/extra/diretta/"
           depmod -b "$PKG" "$KERNEL_RELEASE"
+
+          # Build a generic initramfs from the ARM target module tree, not
+          # from the x86_64 GitHub runner's currently running kernel.
+          # --no-hostonly prevents host hardware from contaminating the image.
+          dracut --force --no-hostonly --no-hostonly-cmdline \
+            --kver "$KERNEL_RELEASE" \
+            --kmoddir "$PKG/lib/modules" \
+            --omit "ply plymouth" \
+            "$PKG/boot/initramfs7" "$KERNEL_RELEASE"
+          test -s "$PKG/boot/initramfs7"
+          file "$PKG/boot/initramfs7" | tee "$PKG/build-info/initramfs-info.txt"
+          lsinitrd "$PKG/boot/initramfs7" > "$PKG/build-info/initramfs-file-list.txt"
+          grep -q "lib/modules/$KERNEL_RELEASE" "$PKG/build-info/initramfs-file-list.txt" || {
+            echo "::error::Generated initramfs does not contain target kernel modules."
+            exit 1
+          }
 
           install -m 0644 "$SRC/.config" "$PKG/build-info/bcm2709-diretta-v6.config"
           install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
