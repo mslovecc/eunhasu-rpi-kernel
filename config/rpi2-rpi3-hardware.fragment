@@ -1,0 +1,42 @@
+# Raspberry Pi 2 Model B / Raspberry Pi 3 Model B hardware drivers
+# Derived selectively from raspberrypi/linux rpi-6.1.y:
+# arch/arm/configs/bcm2709_defconfig
+# Upstream blob: 909d981185a520946b90c996e86540a797da5c6c
+#
+# This is a hardware-only supplement to the V4 Diretta-preserved config.
+# It intentionally excludes CONFIG_MODVERSIONS and all unrelated
+# scheduler, CPU, filesystem, networking-stack and debug defaults.
+#
+# USB host controller and common peripherals
+CONFIG_USB_DWCOTG=y
+CONFIG_USB_DWC2=y
+CONFIG_USB_STORAGE=y
+CONFIG_USB_LAN78XX=y
+CONFIG_USB_NET_SMSC95XX=y
+CONFIG_USB_USBNET=y
+
+# GPIO userspace access and SPI device interface
+CONFIG_RASPBERRYPI_GPIOMEM=m
+CONFIG_SPI_SPIDEV=m
+
+# Raspberry Pi legacy framebuffer/backlight support
+CONFIG_FB_BCM2708=y
+CONFIG_BACKLIGHT_RPI=m
+
+# Raspberry Pi hardware monitoring and PoE HAT support
+CONFIG_SENSORS_RASPBERRYPI_HWMON=m
+CONFIG_RPI_POE_POWER=m
+CONFIG_MFD_RASPBERRYPI_POE_HAT=m
+
+# Raspberry Pi camera interface and common camera sensors
+CONFIG_VIDEO_BCM2835_UNICAM=m
+CONFIG_VIDEO_IMX219=m
+CONFIG_VIDEO_OV5647=m
+
+# Common Raspberry Pi I2S HAT sound cards
+CONFIG_SND_BCM2708_SOC_HIFIBERRY_DAC=m
+CONFIG_SND_BCM2708_SOC_HIFIBERRY_DACPLUS=m
+CONFIG_SND_BCM2708_SOC_HIFIBERRY_DIGI=m
+CONFIG_SND_BCM2708_SOC_JUSTBOOM_DAC=m
+CONFIG_SND_BCM2708_SOC_IQAUDIO_DAC=m
+CONFIG_SND_BCM2708_SOC_RPI_DAC=m
