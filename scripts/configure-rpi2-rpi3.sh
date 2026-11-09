@@ -138,6 +138,47 @@ echo "===== 4. Resolve and validate Kconfig ====="
 make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
 make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
 
+python3 - "$PI_FRAGMENT" .config "$PI_REPORT" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+fragment_path, final_path, report_path = map(Path, sys.argv[1:])
+selected = {}
+for line in fragment_path.read_text().splitlines():
+    m = re.fullmatch(r"CONFIG_([A-Z0-9_]+)=(y|m)", line.strip())
+    if m:
+        selected[m.group(1)] = m.group(2)
+
+final = {}
+for line in final_path.read_text().splitlines():
+    line = line.strip()
+    m = re.fullmatch(r"CONFIG_([A-Z0-9_]+)=(.*)", line)
+    if m:
+        final[m.group(1)] = m.group(2)
+    else:
+        m = re.fullmatch(r"# CONFIG_([A-Z0-9_]+) is not set", line)
+        if m:
+            final[m.group(1)] = "n"
+
+dropped = [(name, value, final.get(name, "<missing>"))
+           for name, value in sorted(selected.items())
+           if final.get(name, "n") not in ("y", "m")]
+with report_path.open("a") as out:
+    out.write("\n[NOT RETAINED AFTER olddefconfig - dependency/choice resolution]\n")
+    if dropped:
+        out.writelines("CONFIG_" + n + "=" + v + " -> " + actual + "\n"
+                       for n, v, actual in dropped)
+    else:
+        out.write("none\n")
+print("[Pi reference options not retained by Kconfig]")
+if dropped:
+    for name, value, actual in dropped:
+        print("CONFIG_" + name + "=" + value + " -> " + actual)
+else:
+    print("none")
+PY
+
 require_config() {
   local expected="$1"
   grep -Fqx "$expected" .config || {
@@ -177,7 +218,7 @@ for sym in PREEMPT_RT THUMB2_KERNEL; do
   fi
 done
 
-echo "===== 5. Preserve repository-enabled USB audio drivers ====="
+echo "===== 5. Preserve repository-enabled ALSA / USB / SoC audio options ====="
 python3 - "$BASE_CONFIG" .config <<'PY'
 import re
 import sys
@@ -198,7 +239,7 @@ def parse(path):
     return values
 
 base, final = parse(base_path), parse(final_path)
-active = {k: v for k, v in base.items() if k.startswith("SND_USB_") and v in ("y", "m")}
+active = {k: v for k, v in base.items() if (k == "SND" or k.startswith("SND_")) and v in ("y", "m")}
 lost = [(k, v, final.get(k, "<missing>")) for k, v in active.items() if final.get(k, "n") not in ("y", "m")]
 print("[USB audio options enabled by repository Fedora config]")
 for key, value in sorted(active.items()):
@@ -207,7 +248,7 @@ if lost:
     for key, before, after in lost:
         print("::error::Repository-enabled USB audio option was lost: CONFIG_" + key + "=" + before + "; final=" + after)
     raise SystemExit(1)
-print("Preserved " + str(len(active)) + " enabled SND_USB options.")
+print("Preserved " + str(len(active)) + " enabled ALSA / USB / SoC sound options.")
 PY
 
 echo "===== 6. Verify Raspberry Pi boot hardware ====="
