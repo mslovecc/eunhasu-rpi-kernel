@@ -171,25 +171,41 @@ jobs:
           printf '%s\n' "Fedora SRPM: $SRPM_NAME" "Source archive: $SOURCE_NAME" "Fedora patch: patch-6.2-redhat.patch" > "$GITHUB_WORKSPACE/.work/source-provenance.txt"
           git diff --stat | tee "$GITHUB_WORKSPACE/.work/fedora-patch-stat.txt"
 
-      - name: Generate official Pi 2/3 reference defconfig from the Fedora-patched source
+      - name: Generate official Pi 2/3 reference defconfig on the Fedora source tree
         shell: bash
         run: |
           set -Eeuo pipefail
           src="$GITHUB_WORKSPACE/.work/kernel/linux-6.2.15"
           ref="$GITHUB_WORKSPACE/.work/rpi2709-reference"
           mkdir -p "$ref"
-          # Official Raspberry Pi 32-bit Pi 2/Pi 3 baseline is bcm2709_defconfig.
-          # Generate it from THIS exact Fedora-patched 6.2.15 tree, not from
-          # raspberrypi/linux and not from a different kernel release.
+
+          # Fedora's 6.2.15 source archive does not carry Raspberry Pi's
+          # downstream bcm2709_defconfig. Import ONLY this config file from
+          # the official Raspberry Pi kernel repository; do not clone or use
+          # its kernel source. The Git blob hash pins the exact config content.
+          config_path="arch/arm/configs/bcm2709_defconfig"
+          config_url="https://raw.githubusercontent.com/raspberrypi/linux/rpi-6.1.y/$config_path"
+          expected_blob="909d981185a520946b90c996e86540a797da5c6c"
+          curl -fL --retry 3 --connect-timeout 20 --max-time 180 "$config_url" \
+            -o "$GITHUB_WORKSPACE/.work/bcm2709_defconfig.official"
+          actual_blob="$(git hash-object "$GITHUB_WORKSPACE/.work/bcm2709_defconfig.official")"
+          [[ "$actual_blob" == "$expected_blob" ]] || {
+            echo "::error::Official bcm2709_defconfig content hash mismatch: $actual_blob"
+            exit 1
+          }
+
+          install -m 0644 "$GITHUB_WORKSPACE/.work/bcm2709_defconfig.official" "$src/$config_path"
           make -C "$src" O="$ref" ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" bcm2709_defconfig
           test -s "$ref/.config"
           grep -q '^CONFIG_ARCH_BCM2835=y' "$ref/.config"
           grep -q '^CONFIG_SMP=y' "$ref/.config"
           cp "$ref/.config" "$GITHUB_WORKSPACE/.work/bcm2709-reference.config"
-          cp "$src/arch/arm/configs/bcm2709_defconfig" "$GITHUB_WORKSPACE/.work/bcm2709_defconfig.source"
+          cp "$GITHUB_WORKSPACE/.work/bcm2709_defconfig.official" "$GITHUB_WORKSPACE/.work/bcm2709_defconfig.source"
           {
-            echo "Official RPi defconfig: arch/arm/configs/bcm2709_defconfig"
-            echo "Generated using the Fedora SRPM-patched Linux 6.2.15 source tree."
+            echo "Official Raspberry Pi defconfig: raspberrypi/linux rpi-6.1.y"
+            echo "Path: $config_path"
+            echo "Git blob: $expected_blob"
+            echo "Only the defconfig file is imported; Fedora Linux 6.2.15 source and patch remain the build source."
             echo "Reference config is used as a hardware feature delta only."
             echo "Fedora ARMv7 config remains the base for module ABI preservation."
           } > "$GITHUB_WORKSPACE/.work/rpi-config-provenance.txt"
