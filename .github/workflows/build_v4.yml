@@ -1010,6 +1010,32 @@ jobs:
             "$PKG/lib/modules/$KERNEL_RELEASE/build" \
             "$PKG/lib/modules/$KERNEL_RELEASE/source"
 
+          # Preserve the supplied Diretta modules byte-for-byte in extra/,
+          # and also install XZ-compressed copies into this kernel's module
+          # tree so depmod/modprobe can resolve them by the exact release.
+          mkdir -p \
+            "$PKG/extra/diretta" \
+            "$PKG/lib/modules/$KERNEL_RELEASE/extra/diretta"
+
+          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            name="$(basename "$module")"
+            install -m 0644 "$module" "$PKG/extra/diretta/$name"
+            install -m 0644 "$module" "$PKG/lib/modules/$KERNEL_RELEASE/extra/diretta/$name"
+            xz -9 -T0 -f "$PKG/lib/modules/$KERNEL_RELEASE/extra/diretta/$name"
+            cmp "$module" "$PKG/extra/diretta/$name"
+          done
+
+          for module in "$PKG"/lib/modules/"$KERNEL_RELEASE"/extra/diretta/*.ko.xz; do
+            actual_vermagic="$(modinfo -F vermagic "$module" | xargs)"
+            if [[ "$actual_vermagic" != "$EXPECTED_VERMAGIC" ]]; then
+              echo "::error::Packaged Diretta module vermagic mismatch: $module"
+              exit 1
+            fi
+          done
+
+          sha256sum "$PKG"/extra/diretta/*.ko \
+            > "$PKG/build-info/diretta-modules.sha256"
+
           depmod -b "$PKG" "$KERNEL_RELEASE"
 
           # Build a module-only initramfs matching this exact kernel release.
@@ -1157,6 +1183,13 @@ jobs:
 
           Kernel modules:
           lib/modules/$KERNEL_RELEASE/
+
+          Original Diretta modules (unchanged copies):
+          extra/diretta/alsa_bridge.ko
+          extra/diretta/diretta_direct.ko
+          XZ-compressed copies are indexed under:
+          lib/modules/$KERNEL_RELEASE/extra/diretta/
+          The packaged copies are checked against the expected vermagic.
 
           Build method:
           Fedora Linux 6.2.15 source archive
