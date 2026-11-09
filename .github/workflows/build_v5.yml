@@ -1,0 +1,244 @@
+name: Build official Raspberry Pi ARMv7 kernel with Diretta modules
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Parallel build jobs (0 = auto)"
+        required: false
+        default: "0"
+        type: string
+      source_branch:
+        description: "Official Raspberry Pi kernel branch"
+        required: true
+        default: "rpi-6.2.y"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpi-armv7-diretta-v5-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Official Pi 2 / Pi 3 ARMv7 kernel and Diretta ABI gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+
+    env:
+      RPI_KERNEL_REPO: https://github.com/raspberrypi/linux.git
+      ARCH: arm
+      CROSS_COMPILE: arm-linux-gnueabihf-
+      EXPECTED_RELEASE: 6.2.15-215.fc36.armv7hl
+      EXPECTED_VERMAGIC: "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Validate original Diretta modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for f in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            test -s "$f" || { echo "::error::Missing $f"; exit 1; }
+            readelf -h "$f" | grep -q 'Class:.*ELF32'
+            readelf -h "$f" | grep -q 'Machine:.*ARM'
+            v="$(modinfo -F vermagic "$f" | xargs)"
+            echo "$f: $v"
+            [[ "$v" == "$EXPECTED_VERMAGIC" ]] || {
+              echo "::error::Unexpected original module vermagic: $v"
+              exit 1
+            }
+          done
+          mkdir -p .work/diretta
+          for f in modules/diretta/*.ko; do
+            n="$(basename "$f")"
+            arm-linux-gnueabihf-nm -u "$f" 2>/dev/null |
+              awk '$1 == "U" {print $2}' | sort -u > ".work/diretta/$n.undefined"
+          done
+          sha256sum modules/diretta/*.ko | tee .work/diretta/original.sha256
+
+      - name: Install cross-build dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y             bc bison build-essential ca-certificates cpio curl device-tree-compiler             dwarves flex gcc-arm-linux-gnueabihf git kmod libelf-dev libssl-dev             make rsync python3 xz-utils zstd binutils-arm-linux-gnueabihf
+          arm-linux-gnueabihf-gcc --version | head -n 1
+
+      - name: Fetch official Raspberry Pi source and select 6.2.15 revision
+        shell: bash
+        env:
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+        run: |
+          set -Eeuo pipefail
+          git clone --no-single-branch "$RPI_KERNEL_REPO" .work/linux
+          cd .work/linux
+          git fetch --no-tags origin "$SOURCE_BRANCH"
+          git checkout -B build-source FETCH_HEAD
+
+          # Select the newest commit on this official branch whose top-level
+          # Makefile identifies Linux 6.2.15. Do not fake the kernel version.
+          CANDIDATE=""
+          while IFS= read -r commit; do
+            [[ -n "$commit" ]] || continue
+            git show "$commit:Makefile" > /tmp/rpi-makefile
+            version="$(awk -F ' = ' '/^VERSION =/{v=$2} /^PATCHLEVEL =/{p=$2} /^SUBLEVEL =/{s=$2} END{print v "." p "." s}' /tmp/rpi-makefile)"
+            if [[ "$version" == "6.2.15" ]]; then
+              CANDIDATE="$commit"
+              break
+            fi
+          done < <(git log --format='%H' --first-parent FETCH_HEAD -- Makefile)
+
+          if [[ -z "$CANDIDATE" ]]; then
+            echo "::error::No Linux 6.2.15 revision found on official branch $SOURCE_BRANCH."
+            echo "The original Diretta modules target 6.2.15; refusing to relabel another kernel."
+            exit 1
+          fi
+
+          git checkout --detach "$CANDIDATE"
+          test "$(make -s ARCH=arm kernelversion)" = "6.2.15"
+          echo "RPI_SOURCE_COMMIT=$CANDIDATE" >> "$GITHUB_ENV"
+          echo "Official Raspberry Pi source commit: $CANDIDATE"
+          git log -1 --oneline
+
+      - name: Configure official bcm2709 ARMv7 kernel
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd .work/linux
+
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" bcm2709_defconfig
+
+          # Preserve the original module's release string. This does not
+          # manufacture ABI compatibility; the subsequent gates are mandatory.
+          scripts/config --file .config             --set-str LOCALVERSION "-215.fc36.armv7hl"             --disable LOCALVERSION_AUTO             --enable MODULES             --enable MODULE_UNLOAD             --enable SMP             --enable PREEMPT             --enable AEABI             --enable VFP             --enable VFPv3             --enable NEON             --enable USB             --enable USB_DWCOTG             --enable USB_USBNET             --module USB_NET_SMSC95XX             --enable MII             --enable NET             --enable INET             --enable DEVTMPFS             --enable DEVTMPFS_MOUNT             --enable MMC             --enable MMC_BLOCK             --enable MMC_BCM2835             --enable EXT4_FS             --enable BINFMT_MISC             --enable AUDIT             --module ZRAM             --enable CFG80211             --enable MAC80211             --module BRCMFMAC             --enable FW_LOADER             --disable MODULE_COMPRESS             --disable MODULE_COMPRESS_GZIP             --disable MODULE_COMPRESS_XZ             --disable MODULE_COMPRESS_ZSTD
+
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          make ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" syncconfig
+
+          actual_release="$(make -s ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
+          echo "Kernel release: $actual_release"
+          [[ "$actual_release" == "$EXPECTED_RELEASE" ]] || {
+            echo "::error::Kernel release mismatch: $actual_release"
+            exit 1
+          }
+
+          for sym in CONFIG_CPU_V7 CONFIG_NEON CONFIG_USB CONFIG_USB_USBNET CONFIG_USB_NET_SMSC95XX CONFIG_MMC_BCM2835; do
+            grep -Eq "^$sym=(y|m)$" .config || {
+              echo "::error::Required config missing: $sym"
+              exit 1
+            }
+          done
+
+          cp .config "$GITHUB_WORKSPACE/rpi-armv7-v5.config"
+          echo "KERNEL_RELEASE=$actual_release" >> "$GITHUB_ENV"
+
+      - name: Build kernel, modules and device trees
+        shell: bash
+        env:
+          BUILD_JOBS: ${{ inputs.jobs }}
+        run: |
+          set -Eeuo pipefail
+          jobs="$BUILD_JOBS"
+          [[ -n "$jobs" && "$jobs" != "0" ]] || jobs="$(nproc)"
+          [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid jobs"; exit 1; }
+
+          make -C .work/linux ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" -j"$jobs" zImage modules dtbs
+          test -s .work/linux/arch/arm/boot/zImage
+          test -s .work/linux/Module.symvers
+          test -s .work/linux/System.map
+
+      - name: Verify Diretta vermagic and exported symbol coverage
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd .work/linux
+
+          sample="$(find . -type f -name '*.ko' -print -quit)"
+          test -n "$sample"
+          built_vermagic="$(modinfo -F vermagic "$sample" | xargs)"
+          echo "Built module vermagic: $built_vermagic"
+          [[ "$built_vermagic" == "$EXPECTED_VERMAGIC" ]] || {
+            echo "::error::Kernel module ABI vermagic differs from the original Diretta modules."
+            exit 1
+          }
+
+          missing_total=0
+          for module in "$GITHUB_WORKSPACE"/modules/diretta/*.ko; do
+            name="$(basename "$module")"
+            while IFS= read -r symbol; do
+              [[ -n "$symbol" ]] || continue
+              if ! awk -v s="$symbol" '$2 == s {found=1} END {exit !found}' Module.symvers; then
+                echo "::error::$name imports missing kernel export: $symbol"
+                missing_total=$((missing_total + 1))
+              fi
+            done < "$GITHUB_WORKSPACE/.work/diretta/$name.undefined"
+          done
+          [[ "$missing_total" -eq 0 ]] || exit 1
+
+          # Preserve exact original module bytes in the package.
+          sha256sum "$GITHUB_WORKSPACE"/modules/diretta/*.ko
+
+      - name: Install and package kernel modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          pkg="$GITHUB_WORKSPACE/package"
+          mkdir -p "$pkg/boot/overlays" "$pkg/lib/modules" "$pkg/modules/diretta" "$pkg/build-info"
+
+          install -m 0644 .work/linux/arch/arm/boot/zImage "$pkg/boot/kernel7.img"
+
+          # Include Pi 2 and Pi 3 DTBs plus the complete DTB set and overlays.
+          find .work/linux/arch/arm/boot/dts -maxdepth 1 -type f -name '*.dtb' -exec cp -t "$pkg/boot/" {} +
+          find .work/linux/arch/arm/boot/dts/overlays -maxdepth 1 -type f \( -name '*.dtbo' -o -name 'README' \) -exec cp -t "$pkg/boot/overlays/" {} +
+
+          test -s "$pkg/boot/bcm2836-rpi-2-b.dtb"
+          test -s "$pkg/boot/bcm2837-rpi-3-b.dtb"
+
+          make -C .work/linux ARCH="$ARCH" CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$pkg" modules_install
+          rm -f "$pkg/lib/modules/$KERNEL_RELEASE/build" "$pkg/lib/modules/$KERNEL_RELEASE/source"
+          depmod -b "$pkg" "$KERNEL_RELEASE"
+
+          install -m 0644 modules/diretta/alsa_bridge.ko "$pkg/modules/diretta/"
+          install -m 0644 modules/diretta/diretta_direct.ko "$pkg/modules/diretta/"
+          install -m 0644 .work/linux/.config "$pkg/build-info/kernel.config"
+          install -m 0644 .work/linux/Module.symvers "$pkg/build-info/Module.symvers"
+          install -m 0644 .work/linux/System.map "$pkg/build-info/System.map"
+          printf '%s\n' "$RPI_SOURCE_COMMIT" > "$pkg/build-info/raspberrypi-linux-commit.txt"
+          cp .work/diretta/original.sha256 "$pkg/build-info/diretta-original.sha256"
+
+          cat > "$pkg/README.txt" <<EOF
+          Official Raspberry Pi ARMv7 kernel for Pi 2 / Pi 3
+          Kernel release: $KERNEL_RELEASE
+          Source: raspberrypi/linux
+          Source commit: $RPI_SOURCE_COMMIT
+          Config: bcm2709_defconfig
+          Kernel image: boot/kernel7.img
+          Device trees: boot/*.dtb
+          Overlays: boot/overlays/
+          Modules: lib/modules/$KERNEL_RELEASE/
+          Original Diretta modules: modules/diretta/
+          NOTE: vermagic and symbol checks are static checks, not proof of runtime ABI compatibility.
+          EOF
+
+          tar -czf "rpi-armv7-diretta-$KERNEL_RELEASE.tar.gz" -C "$GITHUB_WORKSPACE" package
+          sha256sum "rpi-armv7-diretta-$KERNEL_RELEASE.tar.gz" > "rpi-armv7-diretta-$KERNEL_RELEASE.tar.gz.sha256"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi-armv7-diretta-v5-${{ env.KERNEL_RELEASE }}
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi-armv7-diretta-${{ env.KERNEL_RELEASE }}.tar.gz
+            rpi-armv7-diretta-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
+            rpi-armv7-v5.config
+            package/README.txt
+            package/build-info/**
