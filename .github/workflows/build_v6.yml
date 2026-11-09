@@ -252,7 +252,7 @@ jobs:
             echo "Built module files: $(wc -l < rpi2b-v6-module-inventory.txt)"
             echo
             echo "[Module directory counts - advisory]"
-            awk -F/ '{print $1 "/" $2 "/" $3}' rpi2b-v6-module-inventory.txt | sort | uniq -c | sort -nr | head -n 80
+            awk -F/ '{print $1 "/" $2 "/" $3}' rpi2b-v6-module-inventory.txt | sort | uniq -c | sort -nr | awk 'NR <= 80'
           } | tee rpi2b-v6-module-audit.txt
           echo "::notice::Module inventory is advisory; optional/non-Pi drivers do not fail the build."
 
