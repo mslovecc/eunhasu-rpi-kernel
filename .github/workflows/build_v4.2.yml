@@ -482,6 +482,7 @@ jobs:
           Initramfs:
             boot/initramfs7 (gzip-compressed newc CPIO; modules only)
             Module compression follows the Fedora config: .ko, .ko.xz, .ko.gz, or .ko.zst.
+          Non-Pi PCI/PCIe, SATA/NVMe and PC/discrete GPU drivers are excluded.
 
           Kernel modules:
             lib/modules/$KERNEL_RELEASE/
@@ -491,8 +492,13 @@ jobs:
             Official bcm2709_defconfig and matching 6.2.15 bcm2835_defconfig are
             references only; only supported symbols present in the repository
             config are selected.
-            The A20 fragment contains Diretta ABI settings only. Existing ALSA
-            and USB audio selections from the Fedora config are preserved.
+            The A20 fragment contains Diretta ABI settings only. The required
+            Raspberry Pi ALSA path and USB Audio Class driver are validated;
+            unrelated Fedora SND_* options absent from Linux 6.2.15 are not
+            treated as build blockers.
+            PCI/PCIe, ATA/SATA, NVMe, AMDGPU, Nouveau, Radeon and PC/virtual GPU
+            drivers are explicitly disabled and audited. Shared SCSI/USB storage,
+            DRM core and Raspberry Pi VC4 support are retained.
             CONFIG_MODVERSIONS is disabled to match the supplied Diretta modules.
 
           IMPORTANT:
