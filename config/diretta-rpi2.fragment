@@ -15,6 +15,10 @@ CONFIG_MODULES=y
 CONFIG_MODULE_UNLOAD=y
 # CONFIG_MODVERSIONS is not set
 
+# Provide the page_address() implementation/export required by alsa_bridge.
+# ARM exposes this through the HIGHMEM page-address mapping implementation.
+CONFIG_HIGHMEM=y
+
 # Keep the ARMv7 hardened usercopy / fortify implementation available.
 CONFIG_HARDENED_USERCOPY=y
 CONFIG_FORTIFY_SOURCE=y
