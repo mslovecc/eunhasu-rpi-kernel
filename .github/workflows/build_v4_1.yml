@@ -483,7 +483,6 @@ jobs:
             CONFIG_USB_STORAGE=y \
             CONFIG_USB_LAN78XX=y \
             CONFIG_USB_NET_SMSC95XX=y \
-            CONFIG_RASPBERRYPI_GPIOMEM=m \
             CONFIG_SPI_SPIDEV=m \
             CONFIG_FB_BCM2708=y \
             CONFIG_BACKLIGHT_RPI=m \
