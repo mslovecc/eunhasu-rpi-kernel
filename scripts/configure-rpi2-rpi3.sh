@@ -218,38 +218,95 @@ for sym in PREEMPT_RT THUMB2_KERNEL; do
   fi
 done
 
-echo "===== 5. Preserve repository-enabled ALSA / USB / SoC audio options ====="
-python3 - "$BASE_CONFIG" .config <<'PY'
-import re
-import sys
+echo "===== 5. Exclude hardware buses and drivers absent from Raspberry Pi 2/3 ====="
+# Pi 2/3 has no PCI/PCIe, SATA, or NVMe host interface. Keep shared SCSI/USB
+# storage, DRM core, VC4 and simpledrm; remove only non-target hardware.
+python3 - .config <<'PY' > "$WORK/rpi2-rpi3-hardware-disable.list"
+import re, sys
 from pathlib import Path
-
-base_path, final_path = map(Path, sys.argv[1:])
-def parse(path):
-    values = {}
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        m = re.fullmatch(r"CONFIG_([A-Z0-9_]+)=(.*)", line)
-        if m:
-            values[m.group(1)] = m.group(2)
-        else:
-            m = re.fullmatch(r"# CONFIG_([A-Z0-9_]+) is not set", line)
-            if m:
-                values[m.group(1)] = "n"
-    return values
-
-base, final = parse(base_path), parse(final_path)
-active = {k: v for k, v in base.items() if (k == "SND" or k.startswith("SND_")) and v in ("y", "m")}
-lost = [(k, v, final.get(k, "<missing>")) for k, v in active.items() if final.get(k, "n") not in ("y", "m")]
-print("[USB audio options enabled by repository Fedora config]")
-for key, value in sorted(active.items()):
-    print("CONFIG_" + key + "=" + value + " -> " + final.get(key, "<missing>"))
-if lost:
-    for key, before, after in lost:
-        print("::error::Repository-enabled USB audio option was lost: CONFIG_" + key + "=" + before + "; final=" + after)
-    raise SystemExit(1)
-print("Preserved " + str(len(active)) + " enabled ALSA / USB / SoC sound options.")
+values = {}
+for raw in Path(sys.argv[1]).read_text().splitlines():
+    line = raw.strip()
+    m = re.fullmatch(r"CONFIG_([A-Z0-9_]+)=(.*)", line)
+    if m: values[m.group(1)] = m.group(2)
+    else:
+        m = re.fullmatch(r"# CONFIG_([A-Z0-9_]+) is not set", line)
+        if m: values[m.group(1)] = "n"
+gpu = {
+    "DRM_AMDGPU", "DRM_NOUVEAU", "DRM_RADEON",
+    "DRM_AST", "DRM_BOCHS", "DRM_CIRRUS_QEMU", "DRM_HYPERV",
+    "DRM_MGAG200", "DRM_QXL", "DRM_VIRTIO_GPU", "DRM_VMWGFX",
+    "DRM_VBOXVIDEO",
+    "FB_EFI", "FB_NVIDIA", "FB_RADEON", "FB_RIVA", "FB_VESA", "FB_VGA16",
+}
+for name, value in sorted(values.items()):
+    if value not in ("y", "m"): continue
+    if (name in {"PCI", "ATA", "BLK_DEV_NVME"} or
+        name.startswith(("PCI_", "PCIE", "ATA_", "SATA_", "NVME_")) or
+        name in gpu):
+        print(name)
 PY
+
+while IFS= read -r sym; do
+  [[ -n "$sym" ]] || continue
+  scripts/config --file .config --disable "$sym"
+done < "$WORK/rpi2-rpi3-hardware-disable.list"
+
+make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
+
+python3 - .config "$WORK/rpi2-rpi3-hardware-disable.list" "$HARDWARE_REPORT" <<'PY'
+import re, sys
+from pathlib import Path
+config_path, disabled_path, report_path = map(Path, sys.argv[1:])
+values = {}
+for raw in config_path.read_text().splitlines():
+    line = raw.strip()
+    m = re.fullmatch(r"CONFIG_([A-Z0-9_]+)=(.*)", line)
+    if m: values[m.group(1)] = m.group(2)
+    else:
+        m = re.fullmatch(r"# CONFIG_([A-Z0-9_]+) is not set", line)
+        if m: values[m.group(1)] = "n"
+gpu = {
+    "DRM_AMDGPU", "DRM_NOUVEAU", "DRM_RADEON",
+    "DRM_AST", "DRM_BOCHS", "DRM_CIRRUS_QEMU", "DRM_HYPERV",
+    "DRM_MGAG200", "DRM_QXL", "DRM_VIRTIO_GPU", "DRM_VMWGFX",
+    "DRM_VBOXVIDEO",
+    "FB_EFI", "FB_NVIDIA", "FB_RADEON", "FB_RIVA", "FB_VESA", "FB_VGA16",
+}
+def forbidden(name):
+    return (name in {"PCI", "ATA", "BLK_DEV_NVME"} or
+            name.startswith(("PCI_", "PCIE", "ATA_", "SATA_", "NVME_")) or
+            name in gpu)
+active = [(n, v) for n, v in values.items()
+          if v in ("y", "m") and forbidden(n)]
+if active:
+    for n, v in sorted(active):
+        print(f"::error::Non-Raspberry-Pi hardware option remains enabled: CONFIG_{n}={v}")
+    raise SystemExit(1)
+disabled = [x for x in disabled_path.read_text().splitlines() if x]
+with report_path.open("w") as out:
+    out.write("Raspberry Pi 2/3 hardware exclusion audit\n")
+    out.write("Disabled active Fedora-base options: " + str(len(disabled)) + "\n")
+    out.write("PCI/PCIe, ATA/SATA, NVMe, AMDGPU, Nouveau, Radeon and PC/virtual GPU drivers disabled\n")
+    out.write("SCSI and USB storage retained; DRM core / VC4 / simpledrm not blanket-disabled\n")
+    out.write("\n[DISABLED OPTIONS]\n")
+    out.write("".join("CONFIG_" + x + "\n" for x in disabled))
+print("Hardware exclusion audit passed; disabled " + str(len(disabled)) + " active non-Pi options.")
+PY
+
+echo "===== 5.1 Validate Raspberry Pi audio and USB DAC support ====="
+# The old audit incorrectly required every SND_* entry from Fedora's much
+# broader config, including symbols absent from Linux 6.2.15. Validate the
+# actual Pi/USB audio path instead of unrelated PC and other-SoC drivers.
+for sym in SND SND_PCM SND_TIMER SND_USB SND_USB_AUDIO SND_SOC SND_BCM2835 SND_BCM2835_SOC_I2S; do
+  if grep -Eq "^CONFIG_$sym=(y|m)$" .config; then
+    grep -E "^CONFIG_$sym=(y|m)$" .config
+  else
+    echo "::error::Required Raspberry Pi/USB audio option is not enabled: CONFIG_$sym"
+    exit 1
+  fi
+done
 
 echo "===== 6. Verify Raspberry Pi boot hardware ====="
 for sym in USB USB_DWC2 SERIAL_AMBA_PL011 SERIAL_AMBA_PL011_CONSOLE; do
@@ -318,6 +375,6 @@ cp localversion "$GITHUB_WORKSPACE/output-localversion"
   grep -E '^(CONFIG_(ARCH_BCM2835|ARCH_MULTI_V7|MMC|MMC_BLOCK|MMC_BCM2835|USB|USB_DWC2|USB_LAN78XX|USB_NET_SMSC95XX|SERIAL_AMBA_PL011|I2C_BCM|SPI_BCM|SPI_SPIDEV|GPIO_BCM|DRM_VC4|VCHIQ))=' .config || true
   echo
   echo "The list contains only options supported by the source and present in the repository Fedora config."
-} > "$HARDWARE_REPORT"
+} >> "$HARDWARE_REPORT"
 cp "$PI_REPORT" "$GITHUB_WORKSPACE/rpi2-rpi3-intersection-report.txt"
 echo "Kconfig passed: Fedora ARMv7 base + supported Pi hardware intersection + A20 ABI: $ACTUAL_RELEASE"
