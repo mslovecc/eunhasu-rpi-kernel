@@ -111,7 +111,7 @@ jobs:
           export REPOSITORY_RAW_BASE
           bash scripts/download-sources.sh
 
-      - name: Extract and verify Fedora patch payload (configuration is NOT used)
+      - name: Extract and verify Fedora SRPM patch payload (Fedora config is not used)
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -145,7 +145,6 @@ jobs:
           tar -xJf ".work/downloads/$SOURCE_TARBALL" -C .work/source
           SRC="$GITHUB_WORKSPACE/.work/source/linux-6.2.15"
           test -s "$SRC/Makefile"
-          test -s "$SRC/arch/arm/configs/sunxi_defconfig"
           test -s "$SRC/arch/arm/boot/dts/sun8i-h3-orangepi-pc.dts"
           test -s "$SRC/arch/arm/boot/dts/sun8i-h3.dtsi"
 
@@ -237,8 +236,6 @@ jobs:
             output-orangepi-pc.localversion
             h3-v2-config-report.txt
             diretta-h3-v2-compatibility-report.txt
-            diretta-h3-v2-compatibility-report.txt
-            h3-v2-config-report.txt
             output-orangepi-pc-h3-v2-base.config
             package-orangepi-pc/README-INSTALL.txt
             package-orangepi-pc/build-info/**
