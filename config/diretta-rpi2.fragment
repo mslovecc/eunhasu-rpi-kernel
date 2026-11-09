@@ -1,0 +1,25 @@
+# Diretta ABI compatibility overlay for Raspberry Pi 2 Model B (bcm2709_defconfig)
+# The official repository bcm2709_defconfig remains the sole base configuration.
+
+CONFIG_LOCALVERSION="-215.fc36.armv7hl"
+# CONFIG_LOCALVERSION_AUTO is not set
+
+CONFIG_SMP=y
+CONFIG_PREEMPT=y
+# CONFIG_PREEMPT_VOLUNTARY is not set
+# CONFIG_PREEMPT_NONE is not set
+# CONFIG_PREEMPT_DYNAMIC is not set
+# CONFIG_PREEMPT_RT is not set
+
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+# CONFIG_MODVERSIONS is not set
+
+# Keep the ARMv7 hardened usercopy / fortify implementation available.
+CONFIG_HARDENED_USERCOPY=y
+CONFIG_FORTIFY_SOURCE=y
+
+# Do not require signed out-of-tree Diretta modules.
+# CONFIG_MODULE_SIG is not set
+# CONFIG_MODULE_SIG_FORCE is not set
+# CONFIG_MODULE_SIG_ALL is not set
