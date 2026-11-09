@@ -27,6 +27,7 @@ jobs:
       SRPM_SHA256: "f2f2fef31c54111720782b7867bc727d4f67866864a0e54c9dab9c606737f570"
       SOURCE_NAME: "linux-6.2.15.tar.xz"
       SOURCE_SHA256: "bc2d24c3a8bba92f92f3b480381fe7c80bb85d694fda656a1e030f55b926c766"
+      SOURCE_MIRROR_BASE: "https://s2.bravo123.top"
       EXPECTED_RELEASE: "6.2.15-215.fc36.armv7hl"
       EXPECTED_VERMAGIC: "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
       ARCH: arm
@@ -79,23 +80,62 @@ jobs:
           sudo apt-get install -y bc bison build-essential cpio curl device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf git kmod libelf-dev libssl-dev make rpm2cpio rsync xz-utils zstd binutils-arm-linux-gnueabihf
           arm-linux-gnueabihf-gcc --version | head -n 1
 
-      - name: Download and verify repository Release 6.2.15 sources
+      - name: Download and verify repository Release 6.2.15 sources (GitHub primary, mirror fallback)
         shell: bash
         run: |
           set -Eeuo pipefail
           mkdir -p .work/download .work/srpm
-          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
-          curl -fL --retry 3 "$base/$SRPM_NAME" -o ".work/download/$SRPM_NAME"
-          curl -fL --retry 3 "$base/$SOURCE_NAME" -o ".work/download/$SOURCE_NAME"
-          echo "$SRPM_SHA256  .work/download/$SRPM_NAME" | sha256sum -c -
-          echo "$SOURCE_SHA256  .work/download/$SOURCE_NAME" | sha256sum -c -
+          primary="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+
+          download_verified() {
+            local filename="$1"
+            local expected_sha="$2"
+            local destination=".work/download/$filename"
+            local tmp="${destination}.part"
+            local url
+            local label
+
+            # Try the canonical GitHub Release asset first, then the configured
+            # mirror. Each candidate is accepted only after SHA256 verification.
+            for label in primary mirror; do
+              if [[ "$label" == "primary" ]]; then
+                url="$primary/$filename"
+              else
+                url="${SOURCE_MIRROR_BASE%/}/$filename"
+              fi
+
+              echo "::group::Download $filename from $label: $url"
+              rm -f "$tmp"
+              if curl -fL --connect-timeout 20 --max-time 1800 --retry 2 --retry-delay 2 "$url" -o "$tmp"; then
+                if echo "$expected_sha  $tmp" | sha256sum -c -; then
+                  mv "$tmp" "$destination"
+                  echo "Verified $filename from $label."
+                  echo "::endgroup::"
+                  return 0
+                else
+                  echo "::warning::SHA256 mismatch for $filename from $label; trying next source."
+                fi
+              else
+                echo "::warning::Download failed for $filename from $label; trying next source."
+              fi
+              rm -f "$tmp"
+              echo "::endgroup::"
+            done
+
+            echo "::error::Unable to obtain a SHA256-verified copy of $filename from GitHub Release or $SOURCE_MIRROR_BASE"
+            return 1
+          }
+
+          download_verified "$SRPM_NAME" "$SRPM_SHA256"
+          download_verified "$SOURCE_NAME" "$SOURCE_SHA256"
+
           rpm2cpio ".work/download/$SRPM_NAME" | (cd .work/srpm && cpio -idm --quiet)
           find .work/srpm -type f | sort > .work/srpm-files.txt
           test -s .work/srpm-files.txt
           find .work/srpm -type f -name kernel.spec -print -quit | grep -q .
           find .work/srpm -type f -name kernel-armv7hl-fedora.config -print -quit | grep -q .
           find .work/srpm -type f -name patch-6.2-redhat.patch -print -quit | grep -q .
-          echo "SRPM extracted; source and SRPM checksums verified."
+          echo "SRPM extracted; both source assets passed SHA256 verification."
 
       - name: Prepare Fedora kernel source and apply Fedora patchset
         shell: bash
