@@ -308,6 +308,12 @@ jobs:
               "DRM_I915", "DRM_AST", "DRM_BOCHS", "DRM_QXL",
               "DRM_VIRTIO_GPU", "DRM_VMWGFX", "DRM_GMA500",
               "DRM_CIRRUS_QEMU", "DRM_VBOXVIDEO", "MPTCP", "MCTP",
+              "SND_MTPAV", "SND_SERIAL_U16550", "SND_SERIAL_GENERIC",
+              "SND_MPU401", "SND_USB_UA101", "SND_USB_6FIRE",
+              "SND_USB_HIFACE", "SND_BCD2000", "SND_USB_LINE6",
+              "SND_USB_POD", "SND_USB_PODHD", "SND_USB_TONEPORT",
+              "SND_USB_VARIAX", "SND_SEQ_VIRMIDI", "SND_DUMMY",
+              "SND_ALOOP", "SND_VIRMIDI", "SND_SEQ_DUMMY",
           }
           enabled = [(n, values.get(n, "n")) for n in sorted(forbidden)
                      if values.get(n, "n") in ("y", "m")]
