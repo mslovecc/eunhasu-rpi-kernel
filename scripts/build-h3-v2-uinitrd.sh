@@ -77,7 +77,7 @@ done
 gzip -n -9 -c "$CPIO" > "$GZIP"
 mkdir -p "$(dirname "$OUTPUT")"
 mkimage -A arm -O linux -T ramdisk -C gzip \
-  -n "Eunhasu H3 initramfs $KERNEL_RELEASE" \
+  -n "Eunhasu H3 initramfs" \
   -d "$GZIP" "$OUTPUT"
 
 dumpimage -l "$OUTPUT" > "$WORK/new-uinitrd-header.txt"
