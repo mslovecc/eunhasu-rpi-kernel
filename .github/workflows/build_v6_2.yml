@@ -1,0 +1,300 @@
+name: Build Raspberry Pi 2B Kernel from bcm2709_defconfig (V6.2 - boot-chain audited Diretta)
+
+"on":
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Parallel build jobs (0 = auto)"
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpi2b-kernel-v6.2-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      RELEASE_TAG: "6.2.15"
+      SRPM_NAME: "kernel-6.2.15-100.fc36.src.rpm"
+      SOURCE_TARBALL: "linux-6.2.15.tar.xz"
+      SRPM_SHA256: "f2f2fef31c54111720782b7867bc727d4f67866864a0e54c9dab9c606737f570"
+      SOURCE_SHA256: "bc2d24c3a8bba92f92f3b480381fe7c80bb85d694fda656a1e030f55b926c766"
+      SUPPORT_DIR: sources/kernel-srpm
+      DEFCONFIG: config/bcm2709_defconfig
+      DIRETTA_FRAGMENT: config/diretta-rpi2.fragment
+      BOOT_FRAGMENT: config/rpi2b-v6.2-boot.fragment
+      EXPECTED_KERNEL_RELEASE: 6.2.15-215.fc36.armv7hl
+
+    steps:
+      - name: Checkout current V6.2 branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Retrieve original Eunhasu initramfs7 from main
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/original
+          git fetch --no-tags --depth=1 origin main
+          git show FETCH_HEAD:sources/eunhasu/initramfs7 > .work/original/initramfs7
+          test -s .work/original/initramfs7
+          sha256sum .work/original/initramfs7 | tee .work/original/initramfs7.sha256
+          file .work/original/initramfs7
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ca-certificates cpio curl \
+            device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf git kmod \
+            libelf-dev libssl-dev make patch python3 rpm rsync xz-utils \
+            binutils-arm-linux-gnueabihf
+          echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
+
+      - name: Validate source inputs and Diretta modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for f in "$DEFCONFIG" "$DIRETTA_FRAGMENT" "$BOOT_FRAGMENT" \
+            "$SUPPORT_DIR/kernel.spec" "$SUPPORT_DIR/patch-6.2-redhat.patch" \
+            "$SUPPORT_DIR/SHA256SUMS" modules/diretta/alsa_bridge.ko \
+            modules/diretta/diretta_direct.ko; do
+            test -s "$f" || { echo "::error::Missing $f"; exit 1; }
+          done
+          (cd "$SUPPORT_DIR" && sha256sum --check SHA256SUMS)
+          A="$(modinfo -F vermagic modules/diretta/alsa_bridge.ko | xargs)"
+          B="$(modinfo -F vermagic modules/diretta/diretta_direct.ko | xargs)"
+          test "$A" = "$B"
+          test "$A" = "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
+          for m in modules/diretta/*.ko; do
+            readelf -h "$m" | grep -q 'Class:.*ELF32'
+            readelf -h "$m" | grep -q 'Machine:.*ARM'
+          done
+          sha256sum modules/diretta/*.ko
+
+      - name: Download and verify Linux source and Fedora SRPM
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/downloads
+          PRIMARY="https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/$RELEASE_TAG"
+          BACKUP="https://s2.bravo123.top"
+          get_verified() {
+            local f="$1" sum="$2" url
+            for url in "$PRIMARY/$f" "$BACKUP/$f"; do
+              rm -f ".work/downloads/$f"
+              if curl -fL --connect-timeout 20 --max-time 1800 --retry 2 --retry-all-errors \
+                "$url" -o ".work/downloads/$f" &&
+                echo "$sum  .work/downloads/$f" | sha256sum --check --status; then
+                return 0
+              fi
+              echo "::warning::Download/checksum failed: $url"
+            done
+            echo "::error::Unable to obtain verified $f"; return 1
+          }
+          get_verified "$SRPM_NAME" "$SRPM_SHA256"
+          get_verified "$SOURCE_TARBALL" "$SOURCE_SHA256"
+          rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE}\n' ".work/downloads/$SRPM_NAME" \
+            | tee .work/srpm-identification.txt
+          grep -qx 'kernel 6.2.15-100.fc36' .work/srpm-identification.txt
+
+      - name: Extract and verify Fedora SRPM payload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/srpm-payload
+          (cd .work/srpm-payload && rpm2cpio "../downloads/$SRPM_NAME" | cpio -idm --quiet)
+          SPEC="$(find .work/srpm-payload -name kernel.spec -type f -print -quit)"
+          PATCH="$(find .work/srpm-payload -name patch-6.2-redhat.patch -type f -print -quit)"
+          test -n "$SPEC" && test -n "$PATCH"
+          cmp "$SPEC" "$SUPPORT_DIR/kernel.spec"
+          cmp "$PATCH" "$SUPPORT_DIR/patch-6.2-redhat.patch"
+
+      - name: Extract source and apply Fedora patch
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/source
+          tar -xJf ".work/downloads/$SOURCE_TARBALL" -C .work/source
+          SRC="$GITHUB_WORKSPACE/.work/source/linux-6.2.15"
+          test -s "$SRC/Makefile"
+          test "$(make -s -C "$SRC" ARCH=arm kernelversion)" = "6.2.15"
+          patch --directory="$SRC" --strip=1 --forward < .work/srpm-payload/patch-6.2-redhat.patch
+          RHELVER="$(find .work/srpm-payload -name Makefile.rhelver -type f -print -quit)"
+          test -s "$RHELVER"
+          install -m 0644 "$RHELVER" "$SRC/Makefile.rhelver"
+          echo "SRC=$SRC" >> "$GITHUB_ENV"
+
+      - name: Configure kernel and enforce Diretta ABI settings
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$SRC"
+          cp "$GITHUB_WORKSPACE/$DEFCONFIG" .config
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          bash scripts/kconfig/merge_config.sh -m -r .config "$GITHUB_WORKSPACE/$DIRETTA_FRAGMENT"
+          bash scripts/kconfig/merge_config.sh -m -r .config "$GITHUB_WORKSPACE/$BOOT_FRAGMENT"
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
+          cp .config "$GITHUB_WORKSPACE/output-rpi2b-v6.2.config"
+          grep -qx 'CONFIG_SMP=y' .config
+          grep -qx 'CONFIG_PREEMPT=y' .config
+          grep -qx 'CONFIG_MODULES=y' .config
+          grep -qx 'CONFIG_MODULE_UNLOAD=y' .config
+          grep -qx 'CONFIG_HIGHMEM=y' .config
+          # Raspberry Pi 2B SD card controllers must be built into the kernel.
+          grep -qx 'CONFIG_ARCH_BCM2835=y' .config
+          grep -qx 'CONFIG_MMC_BCM2835=y' .config
+          grep -qx 'CONFIG_MMC_SDHCI_IPROC=y' .config
+          grep -qx 'CONFIG_BLK_DEV_INITRD=y' .config
+          grep -qx 'CONFIG_DEVTMPFS=y' .config
+          grep -qx 'CONFIG_DEVTMPFS_MOUNT=y' .config
+          grep -qx 'CONFIG_MSDOS_PARTITION=y' .config
+          grep -qx 'CONFIG_EXT4_FS=y' .config
+          grep -qx 'CONFIG_DEBUG_INFO=y' .config
+          grep -qx 'CONFIG_DEBUG_INFO_DWARF4=y' .config
+          grep -qx '# CONFIG_DEBUG_INFO_REDUCED is not set' .config
+          grep -qx '# CONFIG_DEBUG_INFO_SPLIT is not set' .config
+          grep -qx '# CONFIG_MODVERSIONS is not set' .config
+          grep -qx 'CONFIG_LOCALVERSION="-215.fc36.armv7hl"' .config
+          REL="$(make -s ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
+          test "$REL" = "$EXPECTED_KERNEL_RELEASE"
+          echo "KERNEL_RELEASE=$REL" >> "$GITHUB_ENV"
+          grep -E '^(CONFIG_(SMP|PREEMPT|MODULES|MODULE_UNLOAD|HIGHMEM|DEBUG_INFO|DEBUG_INFO_DWARF4|LOCALVERSION)=|# CONFIG_(MODVERSIONS|MODULE_SIG) is not set)' .config \
+            > "$GITHUB_WORKSPACE/rpi2b-v6.2-config-report.txt" || true
+
+      - name: Build kernel, modules and DTBs
+        shell: bash
+        env:
+          BUILD_JOBS: ${{ inputs.jobs }}
+        run: |
+          set -Eeuo pipefail
+          JOBS="$BUILD_JOBS"
+          [[ -n "$JOBS" && "$JOBS" != 0 ]] || JOBS="$(nproc)"
+          [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" zImage modules dtbs
+          test -s "$SRC/arch/arm/boot/zImage"
+          test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
+          test -s "$SRC/Module.symvers"
+          # These are built-in drivers, not loadable modules: rootfs must be discoverable before initramfs userspace.
+          test -s "$SRC/drivers/mmc/host/bcm2835.o"
+          test -s "$SRC/drivers/mmc/host/sdhci-iproc.o"
+          test -s "$SRC/System.map"
+          test -s "$SRC/vmlinux"
+          readelf -h "$SRC/vmlinux" | grep -q 'Machine:.*ARM'
+          find "$SRC" -type f -name '*.ko' | sed "s#^$SRC/##" | sort > rpi2b-v6.2-module-inventory.txt
+          echo "Built-in SD drivers:" > rpi2b-v6.2-sdhost-audit.txt
+          ls -l "$SRC/drivers/mmc/host/bcm2835.o" "$SRC/drivers/mmc/host/sdhci-iproc.o" >> rpi2b-v6.2-sdhost-audit.txt
+          echo "Built module files: $(wc -l < rpi2b-v6.2-module-inventory.txt)" > rpi2b-v6.2-module-audit.txt
+
+      - name: Strict Diretta ABI audit
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          test -s scripts/verify-rpi2b-diretta-abi.sh
+          chmod 0755 scripts/verify-rpi2b-diretta-abi.sh
+          bash scripts/verify-rpi2b-diretta-abi.sh "$SRC" "$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
+
+      - name: Audit early boot and root filesystem path
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          chmod 0755 scripts/verify-rpi2b-boot-chain.sh
+          bash scripts/verify-rpi2b-boot-chain.sh "$SRC" .work/original/initramfs7 "$GITHUB_WORKSPACE/rpi2b-v6.2-boot-chain-report.txt"
+
+      - name: Package kernel7, original initramfs7, DTBs and modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PKG="$GITHUB_WORKSPACE/package"
+          MODDIR="$PKG/lib/modules/$KERNEL_RELEASE"
+          mkdir -p "$PKG/boot/overlays" "$PKG/dtb" "$MODDIR/extra/diretta" "$PKG/build-info"
+          install -m 0644 "$SRC/arch/arm/boot/zImage" "$PKG/boot/kernel7.img"
+          install -m 0644 .work/original/initramfs7 "$PKG/boot/initramfs7"
+          install -m 0644 "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb" "$PKG/dtb/"
+          for d in bcm2837-rpi-3-b.dtb bcm2837-rpi-3-b-plus.dtb; do
+            [[ ! -s "$SRC/arch/arm/boot/dts/$d" ]] || install -m 0644 "$SRC/arch/arm/boot/dts/$d" "$PKG/dtb/"
+          done
+          if compgen -G "$SRC/arch/arm/boot/dts/overlays/*.dtbo" >/dev/null; then
+            cp "$SRC"/arch/arm/boot/dts/overlays/*.dtbo "$PKG/boot/overlays/"
+          fi
+          [[ ! -f "$SRC/arch/arm/boot/dts/overlays/README" ]] || cp "$SRC/arch/arm/boot/dts/overlays/README" "$PKG/boot/overlays/"
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$PKG" modules_install
+          install -m 0644 modules/diretta/alsa_bridge.ko "$MODDIR/extra/diretta/"
+          install -m 0644 modules/diretta/diretta_direct.ko "$MODDIR/extra/diretta/"
+          depmod -b "$PKG" "$KERNEL_RELEASE"
+          test -s "$MODDIR/modules.dep"
+          cmp .work/original/initramfs7 "$PKG/boot/initramfs7"
+          sha256sum "$PKG/boot/initramfs7" > "$PKG/build-info/initramfs7.sha256"
+          printf '%s\n' \
+            "initramfs7 is copied byte-for-byte from main:sources/eunhasu/initramfs7." \
+            "Its embedded early-boot modules have NOT been rebuilt for $KERNEL_RELEASE." \
+            "Do not assume runtime compatibility until boot testing validates it." \
+            > "$PKG/build-info/INITRAMFS-NOTE.txt"
+          install -m 0644 "$SRC/.config" "$PKG/build-info/bcm2709-diretta-v6.2.config"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          cp "$GITHUB_WORKSPACE/$DEFCONFIG" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/$DIRETTA_FRAGMENT" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/$BOOT_FRAGMENT" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/rpi2b-v6.2-boot-chain-report.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/.work/srpm-identification.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/diretta-compatibility-report.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/rpi2b-v6.2-config-report.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/rpi2b-v6.2-module-audit.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/rpi2b-v6.2-sdhost-audit.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/rpi2b-v6.2-module-inventory.txt" "$PKG/build-info/"
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2 Model B / Diretta V6.2 revised
+          Kernel release: $KERNEL_RELEASE
+          Boot image: boot/kernel7.img
+          Initramfs: boot/initramfs7 (original Eunhasu image, unchanged)
+          DTBs: dtb/
+          Raspberry Pi 2B DTB: dtb/bcm2836-rpi-2-b.dtb
+          Modules: lib/modules/$KERNEL_RELEASE/
+          Diretta modules: extra/diretta/alsa_bridge.ko and diretta_direct.ko
+
+          WARNING: The original initramfs is preserved exactly. Its embedded
+          early-boot modules are from the original initramfs kernel release,
+          not $KERNEL_RELEASE. Runtime compatibility is not established by
+          this build. The new matching module tree is supplied separately.
+          The boot-chain report checks built-in root-storage and ext4 support.
+          Preserve the original config.txt and cmdline.txt, especially root=PARTUUID.
+          The report cannot prove the physical SD card or runtime root mount.
+          Diretta ABI checks are static gates; actual module loading must be
+          validated on the target Raspberry Pi 2 Model B.
+          EOF
+          cd "$GITHUB_WORKSPACE"
+          tar -czf "rpi2b-kernel-$KERNEL_RELEASE-v6.2-revised.tar.gz" package
+          sha256sum "rpi2b-kernel-$KERNEL_RELEASE-v6.2-revised.tar.gz" > "rpi2b-kernel-$KERNEL_RELEASE-v6.2-revised.tar.gz.sha256"
+
+      - name: Upload revised V6.2 artifact and reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6.2-revised
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6.2-revised.tar.gz
+            rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6.2-revised.tar.gz.sha256
+            output-rpi2b-v6.2.config
+            rpi2b-v6.2-config-report.txt
+            rpi2b-v6.2-module-audit.txt
+            rpi2b-v6.2-module-inventory.txt
+            rpi2b-v6.2-sdhost-audit.txt
+            diretta-compatibility-report.txt
+            rpi2b-v6.2-boot-chain-report.txt
+            package/README.txt
+            package/boot/kernel7.img
+            package/boot/initramfs7
+            package/dtb/**
+            package/build-info/**
