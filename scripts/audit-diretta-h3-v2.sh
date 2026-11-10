@@ -145,8 +145,8 @@ grep -q 'Architecture:.*ARM' "$WORK/uinitrd-header.txt" || fail "uInitrd archite
 dumpimage -p 0 -o "$WORK/uinitrd-payload.gz" "$PKG/boot/uInitrd"
 gzip -t "$WORK/uinitrd-payload.gz" || fail "uInitrd gzip payload is corrupt"
 gzip -dc "$WORK/uinitrd-payload.gz" | cpio -it --quiet > "$WORK/uinitrd-files.txt"
-grep -Eq '^(\\./)?init$' "$WORK/uinitrd-files.txt" || fail "uInitrd /init is missing"
-grep -Eq "^(\\./)?usr/lib/modules/$KERNEL_RELEASE/" "$WORK/uinitrd-files.txt" || fail "uInitrd module directory does not match $KERNEL_RELEASE"
+grep -Eq '^(\./)?init$' "$WORK/uinitrd-files.txt" || fail "uInitrd /init is missing"
+grep -Eq "^(\./)?usr/lib/modules/$KERNEL_RELEASE/" "$WORK/uinitrd-files.txt" || fail "uInitrd module directory does not match $KERNEL_RELEASE"
 
 {
   echo "[Boot image audit]"
