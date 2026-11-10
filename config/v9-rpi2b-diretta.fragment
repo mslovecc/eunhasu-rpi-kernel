@@ -1,0 +1,70 @@
+# V9: Fedora 36 Linux 6.2.15 source + Raspberry Pi 2B bcm2709 hardware base.
+# The bcm2709_defconfig is the sole hardware/configuration starting point.
+# This fragment adds Fedora direct-SD-root and original Diretta ABI requirements.
+
+CONFIG_LOCALVERSION="-215.fc36.armv7hl"
+# CONFIG_LOCALVERSION_AUTO is not set
+
+# Exact original Diretta vermagic requirements.
+CONFIG_SMP=y
+CONFIG_PREEMPT=y
+# CONFIG_PREEMPT_VOLUNTARY is not set
+# CONFIG_PREEMPT_NONE is not set
+# CONFIG_PREEMPT_DYNAMIC is not set
+# CONFIG_PREEMPT_RT is not set
+CONFIG_MODULES=y
+CONFIG_MODULE_UNLOAD=y
+# CONFIG_MODVERSIONS is not set
+# CONFIG_MODULE_SIG is not set
+# CONFIG_MODULE_SIG_FORCE is not set
+# CONFIG_MODULE_SIG_ALL is not set
+
+# ARMv7 / ARM EABI / physical-to-virtual module vermagic.
+CONFIG_CPU_V7=y
+CONFIG_AEABI=y
+CONFIG_ARM_PATCH_PHYS_VIRT=y
+# CONFIG_THUMB2_KERNEL is not set
+CONFIG_NEON=y
+CONFIG_KERNEL_MODE_NEON=y
+
+# Required original kernel exports and their zero-CRC/no-modversions ABI.
+CONFIG_HIGHMEM=y
+CONFIG_HARDENED_USERCOPY=y
+CONFIG_FORTIFY_SOURCE=y
+
+# Fedora 36 root filesystem: root=PARTUUID=... rootfstype=ext4 on SD.
+# These must be built into the kernel so root can be mounted without dracut.
+CONFIG_BLK_DEV_INITRD=y
+CONFIG_DEVTMPFS=y
+CONFIG_DEVTMPFS_MOUNT=y
+CONFIG_MSDOS_PARTITION=y
+CONFIG_EXT4_FS=y
+CONFIG_MMC=y
+CONFIG_MMC_BLOCK=y
+CONFIG_MMC_BCM2835=y
+CONFIG_MMC_SDHCI=y
+CONFIG_MMC_SDHCI_PLTFM=y
+CONFIG_MMC_SDHCI_IPROC=y
+
+# Raspberry Pi 2 USB host, LAN9514/SMSC95XX Ethernet and USB storage.
+CONFIG_USB=y
+CONFIG_USB_DWC2=m
+CONFIG_USB_DWC2_DUAL_ROLE=y
+CONFIG_USB_EHCI_HCD=y
+CONFIG_USB_OHCI_HCD=m
+CONFIG_USB_USBNET=m
+CONFIG_USB_NET_SMSC95XX=m
+CONFIG_USB_LAN78XX=m
+CONFIG_USB_STORAGE=m
+
+# Keep ALSA core and USB audio as modules, as required by alsa_bridge.ko.
+CONFIG_SND=m
+CONFIG_SND_PCM=m
+CONFIG_SND_TIMER=m
+CONFIG_SND_SOC=m
+CONFIG_SND_USB_AUDIO=m
+CONFIG_SND_BCM2835=m
+
+# Serial console used by the Raspberry Pi 2 boot configuration.
+CONFIG_SERIAL_AMBA_PL011=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
