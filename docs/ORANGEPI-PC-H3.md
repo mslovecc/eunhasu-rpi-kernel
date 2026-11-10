@@ -1,90 +1,83 @@
-# Orange Pi PC / Allwinner H3 kernel build
+# Orange Pi PC / Allwinner H3 kernel build (V2)
 
-This is a separate first-stage build path. It does not modify the Raspberry Pi 2
+This is a separate H3 build path. It does not modify the Raspberry Pi 2
 workflow `.github/workflows/build_v4.yml`.
 
-## Target and fixed baseline
+## Fixed target
 
-- Board: Orange Pi PC (Allwinner H3 / sun8i-h3)
-- Architecture: 32-bit ARM, `ARCH=arm`, ARMv7
-- Kernel source: Linux 6.2.15
-- Fedora source package: `kernel-6.2.15-100.fc36.src.rpm`
-- Target kernel release: `6.2.15-215.fc36.armv7hl`
-- DTB: `sun8i-h3-orangepi-pc.dtb`
-- Diretta modules: original repository v4 `alsa_bridge.ko` and `diretta_direct.ko`; never rebuilt or modified
+- Board: Xunlong Orange Pi PC / Allwinner H3
+- Architecture: 32-bit ARMv7 (`ARCH=arm`)
+- Kernel source: Linux 6.2.15 plus the checked-in Fedora 6.2.15 SRPM patch
+- Kernel release: `6.2.15-215.fc36.armv7hl`
+- Diretta modules: original `alsa_bridge.ko` and `diretta_direct.ko`; copied byte-for-byte and never stripped
+- Original boot baseline: verified Eunhasu `uInitrd` and `sun8i-h3-orangepi-pc.dtb`
 
-## Configuration design
+## Original boot assets are workflow inputs
 
-The base is the repository's Fedora `kernel-armv7hl-fedora.config`, not a
-fresh minimal `sunxi_defconfig`. That Fedora ARMv7 config already enables
-Allwinner sunxi / sun8i support and is a closer configuration baseline for
-the existing Fedora-built binary modules.
+The uploaded binary files are not committed into this repository. Upload both
+files as downloadable assets to a GitHub Release (or another HTTPS location
+accessible to GitHub Actions), then supply their URLs when dispatching V2:
 
-The following fragments are merged over it:
+- Original `uInitrd` SHA256:
+  `7273d8d0868402c31f2aa380304c5d67bd6183028d193624a72dbea46b1cddbe`
+- Original `sun8i-h3-orangepi-pc.dtb` SHA256:
+  `fd66f85a2543fe133fa2b884c834c88154b82700368c8e92616b78d3105fa9c2`
 
-- `config/h3-orangepi-pc.fragment`: board boot-critical SD/MMC, ext4, UART,
-  Ethernet, USB, pinctrl and regulator settings.
-- `config/h3-diretta.fragment`: ARMv7, preemption, module and ALSA settings
-  retained from the known v4 module setup.
+The workflow checks SHA256, U-Boot RAMDisk header, gzip payload, initramfs
+contents, and DTB model/compatible string. Mismatched assets are rejected.
 
-The workflow runs `olddefconfig` and then verifies that required settings
-survive Kconfig dependency resolution. A missing required option is a hard
-failure rather than silently accepting a different configuration.
+## Configuration and size controls
 
-## Source download order
+The build starts from the Armbian 6.18.35 sunxi config, adapts it to Linux
+6.2.15, then checks the effective Kconfig result.
 
-1. A matching file in `sources/dist/` in the checked-out repository.
-2. The raw GitHub file at the current workflow ref under `sources/dist/`.
-3. The configured fallback mirror `https://s2.bravo123.top`.
+- Debug information and BTF are explicitly disabled and verified after
+  `olddefconfig`.
+- `modules_install` uses `INSTALL_MOD_STRIP=1` to strip debug sections from
+  newly built kernel modules.
+- The two supplied Diretta modules are copied after stripping and checked
+  byte-for-byte against their originals.
+- The package reports zImage, DTB, uInitrd, module count, module-tree size,
+  largest modules and archive size.
 
-Every candidate must match the SHA256 values already used by the v4 build.
-The SRPM identity, extracted spec, patch, Fedora config and Makefile.rhelver
-are also compared against the checked-in support files.
+## Initramfs construction
 
-## Package contents and installation boundary
+V2 preserves Eunhasu's original initramfs-tools userspace and replaces only
+the old module directory:
 
-The artifact contains:
+1. Extract the verified original U-Boot `uInitrd` payload.
+2. Preserve `/init`, initramfs-tools scripts, udev, binaries, configuration,
+   symlinks and all other original files.
+3. Replace `/usr/lib/modules/6.18.35-current-sunxi` with the complete module
+   tree built for `6.2.15-215.fc36.armv7hl`.
+4. Regenerate module dependency indexes with `depmod`.
+5. Repack as newc cpio + gzip and wrap with `mkimage` as an ARM/Linux U-Boot
+   RAMDisk image.
+6. Verify U-Boot header, gzip payload, cpio contents, module directory and
+   sample module vermagic.
 
-- `boot/zImage`
-- `boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb`
-- `lib/modules/6.2.15-215.fc36.armv7hl/`
-- the two original Diretta modules under `extra/diretta/`
-- config, Module.symvers, System.map and a compatibility report
+The original DTB is copied unchanged. The V2 zImage is built from the selected
+kernel source. This isolates kernel changes while preserving Eunhasu's existing
+initramfs userspace and board description.
 
-It intentionally does not contain or replace U-Boot, rootfs, boot scripts or
-initramfs. Before deployment, back up the SD card and inspect the actual
-U-Boot/extlinux/Armbian boot entry to confirm its kernel, DTB and initramfs
-paths. Do not blindly overwrite a differently named kernel image or DTB.
+## Deployment boundary
 
-MMC/SD and ext4 are built into the kernel to allow mounting an SD-card root
-filesystem without relying on old initramfs modules. If the current boot entry
-loads an initramfs, inspect that boot entry before first boot; this artifact
-does not regenerate an initramfs.
+The artifact contains `boot/zImage`, `boot/uInitrd`,
+`boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb`, the complete
+`lib/modules/6.2.15-215.fc36.armv7hl/` tree and build/audit reports.
+
+Back up the entire boot media before deployment. Confirm the current U-Boot
+environment loads the same kernel, initrd and DTB paths. Use `bootz` for this
+native ARM zImage + initrd + DTB arrangement; do not blindly copy example
+load addresses. Preserve the old boot triplet and module tree for rollback.
 
 ## Diretta compatibility limits
 
-The build verifies:
+The workflow verifies kernelrelease/vermagic, ELF32/ARM identity, dependencies,
+selected symbol names, and exact preservation of both supplied KO files.
+`CONFIG_MODVERSIONS` remains disabled; static symbol checks do not prove
+structure-layout or runtime ABI compatibility. Never force-load or patch vermagic.
 
-- exact original module vermagic against the target kernel release string;
-- ELF32 / ARM architecture;
-- dependency metadata;
-- byte-for-byte preservation of both supplied KO files;
-- presence of each imported symbol name in the new kernel's Module.symvers.
-
-The Fedora ARMv7 baseline and v4 fragment disable `CONFIG_MODVERSIONS`.
-Consequently this workflow does not claim symbol-CRC compatibility. Even a
-complete symbol-name match cannot prove structure layout, calling convention,
-locking or runtime ABI compatibility.
-
-Do not use `insmod -f`, `modprobe --force`, or vermagic patching. The final
-acceptance test must be performed on the actual Orange Pi PC:
-
-1. Boot and verify `uname -r` is `6.2.15-215.fc36.armv7hl`.
-2. Verify `/proc/device-tree/model` identifies Orange Pi PC.
-3. Verify SD/MMC root, Ethernet, USB and serial console.
-4. Run `depmod -a 6.2.15-215.fc36.armv7hl`.
-5. Load ALSA dependencies and both original Diretta modules.
-6. Check `dmesg` and exercise Diretta audio/network operation.
-
-If either KO fails to load, preserve the logs and restore the previous kernel
-and module tree. Do not force-load it.
+Final acceptance must happen on the actual Orange Pi PC: boot, check
+`uname -r`, model, MMC/root mount, Ethernet, USB, serial console, ALSA and
+Diretta operation. If a module fails to load, retain logs and roll back.
