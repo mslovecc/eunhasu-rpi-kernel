@@ -55,7 +55,7 @@ PAYLOAD="$OUT/original-uInitrd.payload.gz"
 dumpimage -p 0 -o "$PAYLOAD" "$OUT/original-uInitrd"
 gzip -t "$PAYLOAD"
 gzip -dc "$PAYLOAD" | cpio -it --quiet > "$OUT/original-initramfs-file-list.txt"
-grep -Eq '^(\\./)?init$' "$OUT/original-initramfs-file-list.txt" || {
+grep -Eq '^(\./)?init$' "$OUT/original-initramfs-file-list.txt" || {
   echo "::error::Original initramfs does not contain /init"
   exit 1
 }
