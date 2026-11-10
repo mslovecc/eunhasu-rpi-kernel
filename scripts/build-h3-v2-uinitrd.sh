@@ -33,7 +33,7 @@ rm -rf "$WORK"
 mkdir -p "$STAGE" "$WORK"
 
 dumpimage -l "$ORIGINAL" > "$WORK/original-header.txt"
-grep -q 'Image Type:.*RAMDisk Image' "$WORK/original-header.txt"
+grep -Eq 'Image Type:.*ARM Linux RAMDisk Image' "$WORK/original-header.txt"
 grep -q 'Architecture:.*ARM' "$WORK/original-header.txt"
 dumpimage -p 0 -o "$PAYLOAD" "$ORIGINAL"
 gzip -t "$PAYLOAD"
@@ -89,7 +89,7 @@ mkimage -A arm -O linux -T ramdisk -C gzip \
   -d "$GZIP" "$OUTPUT"
 
 dumpimage -l "$OUTPUT" > "$WORK/new-uinitrd-header.txt"
-grep -q 'Image Type:.*RAMDisk Image' "$WORK/new-uinitrd-header.txt"
+grep -Eq 'Image Type:.*ARM Linux RAMDisk Image' "$WORK/new-uinitrd-header.txt"
 grep -q 'Architecture:.*ARM' "$WORK/new-uinitrd-header.txt"
 dumpimage -p 0 -o "$WORK/check.gz" "$OUTPUT"
 gzip -t "$WORK/check.gz"
