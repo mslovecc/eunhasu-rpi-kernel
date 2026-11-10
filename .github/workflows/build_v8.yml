@@ -117,7 +117,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p .work/fedora-devel
-          rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE} %{ARCH}\\n' "$FEDORA_DEVEL_RPM" \
+          rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE} %{ARCH}\n' "$FEDORA_DEVEL_RPM" \
             | tee fedora-devel-rpm-identification.txt
           grep -qx 'kernel-devel 6.2.15-100.fc36 armv7hl' fedora-devel-rpm-identification.txt
           (cd .work/fedora-devel && rpm2cpio "$GITHUB_WORKSPACE/$FEDORA_DEVEL_RPM" | cpio -idm --quiet)
@@ -160,7 +160,7 @@ jobs:
           }
           download_verified "$SRPM_NAME" "$SRPM_SHA256"
           download_verified "$SOURCE_TARBALL" "$SOURCE_SHA256"
-          rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE}\\n' ".work/downloads/$SRPM_NAME" \
+          rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE}\n' ".work/downloads/$SRPM_NAME" \
             | tee srpm-identification.txt
           grep -qx 'kernel 6.2.15-100.fc36' srpm-identification.txt
           mkdir -p .work/srpm-payload
@@ -292,7 +292,7 @@ jobs:
             echo "Built module files: $(wc -l < rpi2b-v8-module-inventory.txt)"
             echo
             echo "[Pi 2 critical modules]"
-            grep -E '/(dwc2|smsc95xx|usbnet|usb-storage|snd-usb-audio)\\.ko$' rpi2b-v8-module-inventory.txt || true
+            grep -E '/(dwc2|smsc95xx|usbnet|usb-storage|snd-usb-audio)\.ko$' rpi2b-v8-module-inventory.txt || true
             echo
             echo "[SD host built-in objects]"
             ls -l "$SRC/drivers/mmc/host/bcm2835.o" "$SRC/drivers/mmc/host/sdhci-iproc.o"
