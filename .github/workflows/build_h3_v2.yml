@@ -8,6 +8,24 @@ on:
         required: false
         default: "0"
         type: string
+      original_uinitrd_url:
+        description: "HTTPS URL of the verified original Eunhasu uInitrd release asset"
+        required: true
+        type: string
+      original_uinitrd_sha256:
+        description: "SHA256 of original uInitrd"
+        required: true
+        default: "7273d8d0868402c31f2aa380304c5d67bd6183028d193624a72dbea46b1cddbe"
+        type: string
+      original_dtb_url:
+        description: "HTTPS URL of the verified original Orange Pi PC DTB release asset"
+        required: true
+        type: string
+      original_dtb_sha256:
+        description: "SHA256 of original Orange Pi PC DTB"
+        required: true
+        default: "fd66f85a2543fe133fa2b884c834c88154b82700368c8e92616b78d3105fa9c2"
+        type: string
 
 permissions:
   contents: read
@@ -50,7 +68,7 @@ jobs:
             bc bison build-essential ca-certificates cpio curl \
             device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf \
             git kmod libelf-dev libncurses-dev libssl-dev make patch \
-            python3 rpm rsync xz-utils binutils-arm-linux-gnueabihf
+            python3 rpm rsync xz-utils binutils-arm-linux-gnueabihf u-boot-tools
 
           arm-linux-gnueabihf-gcc --version | sed -n '1p'
           echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
@@ -85,7 +103,9 @@ jobs:
             scripts/download-h3-v2-sources.sh \
             scripts/prepare-h3-v2-config.sh \
             scripts/audit-diretta-h3-v2.sh \
-            scripts/package-h3.sh; do
+            scripts/package-h3.sh \\
+            scripts/download-h3-v2-boot-assets.sh \\
+            scripts/build-h3-v2-uinitrd.sh; do
             bash -n "$f"
             test -x "$f"
           done
@@ -100,6 +120,22 @@ jobs:
               exit 1
             }
           done
+
+
+      - name: Download and verify original Eunhasu uInitrd and Orange Pi PC DTB
+        shell: bash
+        env:
+          ORIGINAL_UINITRD_URL: ${{ inputs.original_uinitrd_url }}
+          ORIGINAL_UINITRD_SHA256: ${{ inputs.original_uinitrd_sha256 }}
+          ORIGINAL_DTB_URL: ${{ inputs.original_dtb_url }}
+          ORIGINAL_DTB_SHA256: ${{ inputs.original_dtb_sha256 }}
+        run: |
+          set -Eeuo pipefail
+          bash scripts/download-h3-v2-boot-assets.sh \
+            "$ORIGINAL_UINITRD_URL" "$ORIGINAL_UINITRD_SHA256" \
+            "$ORIGINAL_DTB_URL" "$ORIGINAL_DTB_SHA256"
+          echo "ORIGINAL_UINITRD=$GITHUB_WORKSPACE/.work/original-boot/original-uInitrd" >> "$GITHUB_ENV"
+          echo "ORIGINAL_DTB=$GITHUB_WORKSPACE/.work/original-boot/original-sun8i-h3-orangepi-pc.dtb" >> "$GITHUB_ENV"
 
       - name: Download Linux source and Fedora SRPM from GitHub Release (fallback mirror enabled)
         shell: bash
@@ -197,6 +233,8 @@ jobs:
           bash scripts/package-h3.sh "$SRC" "$KERNEL_RELEASE"
           bash scripts/audit-diretta-h3-v2.sh "$SRC" "$GITHUB_WORKSPACE/package-orangepi-pc"
 
+          install -m 0644 .work/original-boot/original-boot-assets-report.txt \\
+            package-orangepi-pc/build-info/original-boot-assets-report.txt
           install -m 0644 diretta-h3-v2-compatibility-report.txt \
             package-orangepi-pc/build-info/diretta-h3-v2-compatibility-report.txt
           install -m 0644 h3-v2-config-report.txt \
