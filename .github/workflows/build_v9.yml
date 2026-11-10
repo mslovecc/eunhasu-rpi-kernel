@@ -61,7 +61,7 @@ jobs:
             "$SUPPORT_DIR/kernel.spec" "$SUPPORT_DIR/patch-6.2-redhat.patch" \
             "$SUPPORT_DIR/Makefile.rhelver" "$SUPPORT_DIR/SHA256SUMS" \
             modules/diretta/SHA256SUMS modules/diretta/alsa_bridge.ko \
-            modules/diretta/diretta_direct.ko rpi-boot/config.txt rpi-boot/cmdline.txt \\
+            modules/diretta/diretta_direct.ko rpi-boot/config.txt rpi-boot/cmdline.txt \
             "$A20_DEVEL_TARBALL"; do
             test -s "$f" || { echo "::error::Missing required input: $f"; exit 1; }
           done
