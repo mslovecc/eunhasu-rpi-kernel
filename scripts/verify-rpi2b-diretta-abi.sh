@@ -100,8 +100,11 @@ echo "PASS: both Diretta modules match the build's ARM ELF attributes"
 echo
 echo "[struct module size/layout sanity gate]"
 command -v pahole >/dev/null || fail "pahole is required for struct module inspection"
+grep -qx 'CONFIG_DEBUG_INFO=y' "$SRC/.config" || fail "CONFIG_DEBUG_INFO is required for struct module inspection"
+grep -qx 'CONFIG_DEBUG_INFO_DWARF4=y' "$SRC/.config" || fail "CONFIG_DEBUG_INFO_DWARF4 is required for struct module inspection"
+readelf -S "$SRC/vmlinux" | grep -q '\.debug_info' || fail "vmlinux has no DWARF .debug_info section"
 pahole -C module "$SRC/vmlinux" > "$ROOT/.work/diretta-strict/struct-module.txt" || fail "Cannot extract struct module from this build's vmlinux DWARF"
-STRUCT_SIZE="$(sed -nE 's@.*size:[[:space:]]*([0-9]+),[[:space:]]*cachelines.*@\1@p' "$ROOT/.work/diretta-strict/struct-module.txt" | tail -n1)"
+STRUCT_SIZE="$(sed -nE 's@.*size:[[:space:]]*([0-9]+),.*@\1@p' "$ROOT/.work/diretta-strict/struct-module.txt" | tail -n1)"
 [[ "$STRUCT_SIZE" =~ ^[0-9]+$ ]] || fail "Could not parse struct module size from pahole output"
 for mod in "$ALSA" "$DIRECT"; do
   SECTION_HEX="$(readelf -SW "$mod" | awk '{for(i=1;i<=NF;i++) if($i==".gnu.linkonce.this_module"){print $(i+4); exit}}')"
