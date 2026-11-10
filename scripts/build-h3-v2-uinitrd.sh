@@ -94,11 +94,11 @@ grep -q 'Architecture:.*ARM' "$WORK/new-uinitrd-header.txt"
 dumpimage -p 0 -o "$WORK/check.gz" "$OUTPUT"
 gzip -t "$WORK/check.gz"
 gzip -dc "$WORK/check.gz" | cpio -it --quiet > "$WORK/new-file-list.txt"
-grep -Eq '^(\\./)?init$' "$WORK/new-file-list.txt" || {
+grep -Eq '^(\./)?init$' "$WORK/new-file-list.txt" || {
   echo "::error::Rebuilt initramfs /init is missing"
   exit 1
 }
-grep -Eq "^(\\./)?usr/lib/modules/$KERNEL_RELEASE/" "$WORK/new-file-list.txt" || {
+grep -Eq "^(\./)?usr/lib/modules/$KERNEL_RELEASE/" "$WORK/new-file-list.txt" || {
   echo "::error::Rebuilt initramfs module directory does not match $KERNEL_RELEASE"
   exit 1
 }
