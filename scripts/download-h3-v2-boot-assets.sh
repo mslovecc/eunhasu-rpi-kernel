@@ -49,7 +49,7 @@ download_and_verify "$UINITRD_URL" "$UINITRD_SHA256" "$OUT/original-uInitrd" "Or
 download_and_verify "$DTB_URL" "$DTB_SHA256" "$OUT/original-sun8i-h3-orangepi-pc.dtb" "Release DTB"
 
 dumpimage -l "$OUT/original-uInitrd" | tee "$OUT/uinitrd-image-header.txt"
-grep -q 'Image Type:.*RAMDisk Image' "$OUT/uinitrd-image-header.txt"
+grep -Eq 'Image Type:.*ARM Linux RAMDisk Image' "$OUT/uinitrd-image-header.txt"
 grep -q 'Architecture:.*ARM' "$OUT/uinitrd-image-header.txt"
 
 PAYLOAD="$OUT/original-uInitrd.payload.gz"
