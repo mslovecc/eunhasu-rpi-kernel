@@ -10,7 +10,7 @@ workflow `.github/workflows/build_v4.yml`.
 - Kernel source: Linux 6.2.15 plus the checked-in Fedora 6.2.15 SRPM patch
 - Kernel release: `6.2.15-215.fc36.armv7hl`
 - Diretta modules: original `alsa_bridge.ko` and `diretta_direct.ko`; copied byte-for-byte and never stripped
-- Original boot baseline: verified Eunhasu `uInitrd` and Release DTB; the Release DTB must match the DTB built from Linux 6.2.15 source byte-for-byte
+- Original boot baseline: verified Eunhasu `uInitrd` and Release DTB; the Release DTB must have the same normalized device-tree contents as the DTB built from Linux 6.2.15 source
 
 ## Original boot assets are workflow inputs
 
@@ -26,9 +26,11 @@ and effective Armbian-derived configuration; it does not mix the Release
 zImage with modules from a separate build.
 
 The Release DTB is downloaded and SHA256-verified. The workflow also builds
-the DTB from the exact source tree and requires a byte-for-byte match before
-packaging the Release copy. This makes the Release DTB an independently
-verified boot asset rather than silently substituting an unverified file.
+the DTB from the exact source tree, decompiles both DTBs to sorted DTS form
+using the same DTC binary, and requires the normalized device-tree contents
+to match before packaging the Release copy. Raw DTB bytes can differ because
+of FDT header size/padding or DTC output details even when the tree is the
+same; semantic content is the compatibility check that matters.
 
 The uInitrd and DTB URLs/checksums remain overridable through workflow_dispatch.
 The workflow verifies the uInitrd checksum, U-Boot RAMDisk header, gzip payload
@@ -66,8 +68,8 @@ the old module directory:
    sample module vermagic.
 
 The V2 zImage and modules are built from one selected Linux source/configuration.
-The downloaded Release DTB is packaged only after it matches the source-built
-DTB byte-for-byte. The original Eunhasu uInitrd userspace is preserved, with
+The downloaded Release DTB is packaged only after its normalized DTS content
+matches the source-built DTB. The original Eunhasu uInitrd userspace is preserved, with
 its module tree rebuilt for the new kernel. This keeps the kernel, DTB and
 initramfs module tree aligned while retaining the existing Eunhasu boot logic.
 
