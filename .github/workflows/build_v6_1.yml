@@ -235,6 +235,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/diretta-compatibility-report.txt" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/rpi2b-v6.1-config-report.txt" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/rpi2b-v6.1-module-audit.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/rpi2b-v6.1-sdhost-audit.txt" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/rpi2b-v6.1-module-inventory.txt" "$PKG/build-info/"
           cat > "$PKG/README.txt" <<EOF
           Raspberry Pi 2 Model B / Diretta V6.1 revised
