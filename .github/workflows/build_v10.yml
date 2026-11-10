@@ -8,6 +8,11 @@ name: Build RPi2B Fedora 36 kernel V10 (upstream RPi 6.2.16 + Diretta)
         required: false
         default: "0"
         type: string
+  push:
+    branches:
+      - v10-rpi2b-bcm2709-fedora36-diretta
+    paths:
+      - config/v10-rpi2b-diretta.fragment
 
 permissions:
   contents: read
