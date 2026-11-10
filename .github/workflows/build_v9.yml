@@ -196,6 +196,14 @@ jobs:
             scripts/config --file .config --disable "$opt"
           done
 
+          # Remove any enabled vendor-specific laptop/desktop/server drivers
+          # inherited from the defconfig, while leaving generic buses and USB audio intact.
+          while IFS= read -r opt; do
+            [[ -n "$opt" ]] && scripts/config --file .config --disable "$opt"
+          done < <(awk -F= '/^CONFIG_(X86|INTEL|AMD|NVIDIA|DELL|HP|ACER|ASUS|LENOVO|THINKPAD|APPLE)_[A-Z0-9_]+=(y|m)$/ {
+            sub(/^CONFIG_/, "", $1); print $1
+          }' .config)
+
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
           cp .config "$GITHUB_WORKSPACE/output-v9-rpi2b.config"
@@ -246,8 +254,835 @@ jobs:
             echo "::error::A forbidden non-RPi2 driver remains enabled."
             exit 1
           fi
-          if grep -Eq '^CONFIG_X86(_[A-Z0-9_]+)?=(y|m)$' .config; then
+          if grep -Eq '^CONFIG_X86(_[A-Z0-9_]+)?=(y|m)
+          release="$(make -s ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
+          echo "Resolved kernelrelease: $release"
+          [[ "$release" == "$EXPECTED_KERNEL_RELEASE" ]] || {
+            echo "::error::Kernel release mismatch: $release"
+            exit 1
+          }
+          echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
+
+          {
+            echo "V9 hardware base: $HARDWARE_CONFIG"
+            echo "Fedora source: Linux 6.2.15 + SRPM patch-6.2-redhat.patch"
+            echo "ABI fragment: $ABI_FRAGMENT"
+            echo "Kernel release: $release"
+            echo
+            echo "[ABI and boot options]"
+            grep -E '^(CONFIG_(LOCALVERSION|ARCH_BCM2835|CPU_V7|AEABI|ARM_PATCH_PHYS_VIRT|NEON|KERNEL_MODE_NEON|SMP|PREEMPT|MODULES|MODULE_UNLOAD|HIGHMEM|HARDENED_USERCOPY|FORTIFY_SOURCE|BLK_DEV_INITRD|DEVTMPFS|DEVTMPFS_MOUNT|MSDOS_PARTITION|EXT4_FS|MMC|MMC_BLOCK|MMC_BCM2835|USB_DWC2|USB_NET_SMSC95XX|USB_USBNET|USB_STORAGE|SND|SND_PCM|SND_TIMER|SND_USB_AUDIO)=|# CONFIG_(MODVERSIONS|MODULE_SIG|MODULE_SIG_FORCE|MODULE_SIG_ALL|THUMB2_KERNEL|PREEMPT_RT|LOCALVERSION_AUTO) is not set)' .config || true
+            echo
+            echo "[Forbidden driver disable results]"
+            grep -E "^# CONFIG_($forbidden) is not set$" .config || true
+          } > "$GITHUB_WORKSPACE/v9-config-audit.txt"
+
+      - name: Build zImage, modules and Raspberry Pi 2 device tree
+        shell: bash
+        env:
+          BUILD_JOBS: ${{ inputs.jobs }}
+        run: |
+          set -Eeuo pipefail
+          jobs="$BUILD_JOBS"
+          [[ -n "$jobs" && "$jobs" != "0" ]] || jobs="$(nproc)"
+          [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::Invalid build jobs: $jobs"
+            exit 1
+          }
+
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            -j"$jobs" zImage modules dtbs
+
+          test -s "$SRC/arch/arm/boot/zImage"
+          test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
+          test -s "$SRC/Module.symvers"
+          test -s "$SRC/System.map"
+          test -s "$SRC/vmlinux"
+          readelf -h "$SRC/vmlinux" | grep -q 'Machine:.*ARM'
+
+          for opt in DRM_AMDGPU DRM_NOUVEAU DRM_RADEON DRM_I915 DRM_XE \
+            BLK_DEV_NVME NVME_CORE SCSI_MPI3MR; do
+            if grep -Eq "^CONFIG_$opt=(y|m)$" "$SRC/.config"; then
+              echo "::error::Forbidden driver enabled: CONFIG_$opt"
+              exit 1
+            fi
+          done
+
+          find "$SRC" -type f -name '*.ko' -print \
+            | sed "s#^$SRC/##" | sort > "$GITHUB_WORKSPACE/v9-module-inventory.txt"
+          {
+            echo "Built module count: $(wc -l < "$GITHUB_WORKSPACE/v9-module-inventory.txt")"
+            echo
+            echo "[RPi2 USB / network / audio modules]"
+            grep -E '/(dwc2|smsc95xx|usbnet|usb-storage|snd-usb-audio)\.ko$' \
+              "$GITHUB_WORKSPACE/v9-module-inventory.txt" || true
+          } | tee "$GITHUB_WORKSPACE/v9-driver-audit.txt"
+
+      - name: Verify exact vermagic and mandatory zero-CRC exports
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sample="$(find "$SRC" -type f -name '*.ko' -print -quit)"
+          test -n "$sample"
+          built_vermagic="$(modinfo -F vermagic "$sample" | xargs)"
+          [[ "$built_vermagic" == "$EXPECTED_VERMAGIC" ]] || {
+            echo "::error::Built module vermagic mismatch."
+            echo "Expected: $EXPECTED_VERMAGIC"
+            echo "Actual: $built_vermagic"
+            exit 1
+          }
+          grep -qx '# CONFIG_MODVERSIONS is not set' "$SRC/.config"
+
+          for sym in __check_object_size fortify_panic page_address; do
+            awk -v s="$sym" \
+              '$2 == s && $1 == "0x00000000" && $4 == "EXPORT_SYMBOL" {ok=1} END {exit !ok}' \
+              "$SRC/Module.symvers" || {
+                echo "::error::Required zero-CRC EXPORT_SYMBOL missing: $sym"
+                grep -w "$sym" "$SRC/Module.symvers" || true
+                exit 1
+              }
+          done
+
+          missing_total=0
+          {
+            echo "V9 Diretta static ABI report"
+            echo "Kernel release: $KERNEL_RELEASE"
+            echo "Built module vermagic: $built_vermagic"
+            echo "CONFIG_MODVERSIONS: disabled"
+            echo
+            echo "[Mandatory exports]"
+            for sym in __check_object_size fortify_panic page_address; do
+              awk -v s="$sym" '$2 == s {print}' "$SRC/Module.symvers"
+            done
+            echo
+            for name in alsa_bridge.ko diretta_direct.ko; do
+              imports="$GITHUB_WORKSPACE/.work/diretta/$name.imports"
+              missing="$GITHUB_WORKSPACE/.work/diretta/$name.missing"
+              : > "$missing"
+              while IFS= read -r symbol; do
+                [[ -n "$symbol" ]] || continue
+                if ! awk -v s="$symbol" '$2 == s {found=1} END {exit !found}' "$SRC/Module.symvers"; then
+                  echo "$symbol" >> "$missing"
+                fi
+              done < "$imports"
+              count="$(wc -l < "$missing")"
+              missing_total=$((missing_total + count))
+              echo "[$name]"
+              echo "Imported symbols: $(wc -l < "$imports")"
+              echo "Missing target exports: $count"
+              if [[ "$count" -gt 0 ]]; then sed 's/^/  MISSING: /' "$missing"; fi
+              echo
+            done
+            echo "Total missing imported symbols: $missing_total"
+            echo "Static checks do not prove private structure layout or runtime ABI."
+          } | tee "$GITHUB_WORKSPACE/diretta-v9-compatibility-report.txt"
+
+          if [[ "$missing_total" -ne 0 ]]; then
+            echo "::error::Diretta module imports are missing from target kernel/module exports."
+            exit 1
+          fi
+
+      - name: Package kernel7.img, initramfs7, DTB and matching modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PKG="$GITHUB_WORKSPACE/package"
+          MODDIR="$PKG/lib/modules/$KERNEL_RELEASE"
+          INITROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
+          mkdir -p "$PKG/boot" "$PKG/build-info" "$MODDIR/extra/diretta" \
+            "$INITROOT/usr/lib/modules"
+
+          install -m 0644 "$SRC/arch/arm/boot/zImage" "$PKG/boot/kernel7.img"
+          install -m 0644 "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb" \
+            "$PKG/boot/bcm2836-rpi-2-b.dtb"
+
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            INSTALL_MOD_PATH="$PKG" modules_install
+          rm -f "$MODDIR/build" "$MODDIR/source"
+
+          install -m 0644 modules/diretta/alsa_bridge.ko "$MODDIR/extra/diretta/"
+          install -m 0644 modules/diretta/diretta_direct.ko "$MODDIR/extra/diretta/"
+          depmod -b "$PKG" "$KERNEL_RELEASE"
+          test -s "$MODDIR/modules.dep"
+          test -s "$MODDIR/modules.alias"
+
+          # The SD/MMC, partition parser and ext4 path are built-in. initramfs7
+          # carries this exact release's modules; it intentionally has no /init.
+          cp -a "$MODDIR" "$INITROOT/usr/lib/modules/$KERNEL_RELEASE"
+          (
+            cd "$INITROOT"
+            find . -print0 | LC_ALL=C sort -z \
+              | cpio --null --create --format=newc --owner=0:0
+          ) | gzip -1n > "$PKG/boot/initramfs7"
+
+          test -s "$PKG/boot/initramfs7"
+          gzip -t "$PKG/boot/initramfs7"
+          gzip -dc "$PKG/boot/initramfs7" | cpio -it \
+            > "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" \
+            "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "extra/diretta/alsa_bridge.ko" \
+            "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "extra/diretta/diretta_direct.ko" \
+            "$PKG/build-info/initramfs7.contents.txt"
+
+          # Keep existing overlays/settings and explicitly select V9 boot files.
+          python3 - "$GITHUB_WORKSPACE/rpi-boot/config.txt" "$PKG/boot/config.txt" <<'PY'
+          import sys
+          from pathlib import Path
+          src, dst = map(Path, sys.argv[1:])
+          lines = src.read_text().splitlines()
+          out = []
+          for line in lines:
+              s = line.strip()
+              if s.startswith(("kernel=", "device_tree=", "initramfs ", "auto_initramfs=")):
+                  continue
+              out.append(line)
+          out += [
+              "",
+              "[all]",
+              "kernel=kernel7.img",
+              "device_tree=bcm2836-rpi-2-b.dtb",
+              "auto_initramfs=0",
+              "initramfs initramfs7 followkernel",
+              "",
+          ]
+          dst.write_text("\n".join(out))
+          PY
+          install -m 0644 rpi-boot/cmdline.txt "$PKG/boot/cmdline.txt"
+
+          install -m 0644 "$SRC/.config" "$PKG/build-info/v9-final.config"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 "$GITHUB_WORKSPACE/a20-original-Module.symvers" "$PKG/build-info/"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          install -m 0644 "$SRC/vmlinux" "$PKG/build-info/vmlinux"
+          install -m 0644 "$GITHUB_WORKSPACE/$HARDWARE_CONFIG" "$PKG/build-info/"
+          install -m 0644 "$GITHUB_WORKSPACE/$ABI_FRAGMENT" "$PKG/build-info/"
+          for f in v9-config-audit.txt v9-driver-audit.txt v9-module-inventory.txt \
+            diretta-v9-compatibility-report.txt fedora-source-provenance.txt \
+            srpm-identification.txt; do
+            install -m 0644 "$GITHUB_WORKSPACE/$f" "$PKG/build-info/"
+          done
+
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2 Model B / Fedora 36 / Diretta kernel V9
+          Kernel release: $KERNEL_RELEASE
+          Source: Fedora 36 kernel SRPM 6.2.15-100 + Fedora patchset
+          Hardware base: $HARDWARE_CONFIG
+          ABI fragment: $ABI_FRAGMENT
+
+          Boot files:
+            boot/kernel7.img
+            boot/initramfs7
+            boot/bcm2836-rpi-2-b.dtb
+            boot/config.txt
+            boot/cmdline.txt
+
+          Modules:
+            lib/modules/$KERNEL_RELEASE/
+
+          Original Diretta modules are included unchanged:
+            lib/modules/$KERNEL_RELEASE/extra/diretta/alsa_bridge.ko
+            lib/modules/$KERNEL_RELEASE/extra/diretta/diretta_direct.ko
+
+          initramfs7 is a gzip-compressed newc archive containing this exact
+          kernel release's modules under /usr/lib/modules/$KERNEL_RELEASE.
+          It has no /init userspace. The kernel mounts the ext4 PARTUUID root
+          directly because SD/MMC, partition parsing and ext4 are built-in.
+
+          cmdline.txt is copied unchanged. Verify its root PARTUUID matches
+          the Fedora 36 SD card before installation.
+
+          Mandatory ABI gates: CONFIG_MODVERSIONS disabled; both original
+          module vermagic strings match exactly; __check_object_size,
+          fortify_panic and page_address are zero-CRC EXPORT_SYMBOL entries.
+
+          Static checks do not guarantee runtime ABI. Back up the SD card
+          before testing boot, Ethernet, USB Audio and both Diretta modules.
+          EOF
+
+          (cd "$PKG" && find boot lib -type f -print0 | sort -z | xargs -0 sha256sum) \
+            > "$PKG/build-info/PACKAGE-SHA256SUMS.txt"
+          cd "$GITHUB_WORKSPACE"
+          tar -czf "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz" package
+          sha256sum "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz" \
+            > "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz.sha256"
+
+      - name: Upload V9 package and audit reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2b-fedora36-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v9
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2b-fedora36-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v9.tar.gz
+            rpi2b-fedora36-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v9.tar.gz.sha256
+            output-v9-rpi2b.config
+            v9-vs-bcm2709-defconfig.diff
+            v9-config-audit.txt
+            v9-driver-audit.txt
+            v9-module-inventory.txt
+            diretta-v9-compatibility-report.txt
+            fedora-source-provenance.txt
+            srpm-identification.txt
+            a20-original-Module.symvers
+            package/README.txt
+            package/boot/**
+            package/build-info/**
+ .config; then
             echo "::error::An x86 architecture option remains enabled in this ARM build."
+            exit 1
+          fi
+          if grep -Eq '^CONFIG_(INTEL|AMD|NVIDIA|DELL|HP|ACER|ASUS|LENOVO|THINKPAD|APPLE)_[A-Z0-9_]+=(y|m)
+          release="$(make -s ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
+          echo "Resolved kernelrelease: $release"
+          [[ "$release" == "$EXPECTED_KERNEL_RELEASE" ]] || {
+            echo "::error::Kernel release mismatch: $release"
+            exit 1
+          }
+          echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
+
+          {
+            echo "V9 hardware base: $HARDWARE_CONFIG"
+            echo "Fedora source: Linux 6.2.15 + SRPM patch-6.2-redhat.patch"
+            echo "ABI fragment: $ABI_FRAGMENT"
+            echo "Kernel release: $release"
+            echo
+            echo "[ABI and boot options]"
+            grep -E '^(CONFIG_(LOCALVERSION|ARCH_BCM2835|CPU_V7|AEABI|ARM_PATCH_PHYS_VIRT|NEON|KERNEL_MODE_NEON|SMP|PREEMPT|MODULES|MODULE_UNLOAD|HIGHMEM|HARDENED_USERCOPY|FORTIFY_SOURCE|BLK_DEV_INITRD|DEVTMPFS|DEVTMPFS_MOUNT|MSDOS_PARTITION|EXT4_FS|MMC|MMC_BLOCK|MMC_BCM2835|USB_DWC2|USB_NET_SMSC95XX|USB_USBNET|USB_STORAGE|SND|SND_PCM|SND_TIMER|SND_USB_AUDIO)=|# CONFIG_(MODVERSIONS|MODULE_SIG|MODULE_SIG_FORCE|MODULE_SIG_ALL|THUMB2_KERNEL|PREEMPT_RT|LOCALVERSION_AUTO) is not set)' .config || true
+            echo
+            echo "[Forbidden driver disable results]"
+            grep -E "^# CONFIG_($forbidden) is not set$" .config || true
+          } > "$GITHUB_WORKSPACE/v9-config-audit.txt"
+
+      - name: Build zImage, modules and Raspberry Pi 2 device tree
+        shell: bash
+        env:
+          BUILD_JOBS: ${{ inputs.jobs }}
+        run: |
+          set -Eeuo pipefail
+          jobs="$BUILD_JOBS"
+          [[ -n "$jobs" && "$jobs" != "0" ]] || jobs="$(nproc)"
+          [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::Invalid build jobs: $jobs"
+            exit 1
+          }
+
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            -j"$jobs" zImage modules dtbs
+
+          test -s "$SRC/arch/arm/boot/zImage"
+          test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
+          test -s "$SRC/Module.symvers"
+          test -s "$SRC/System.map"
+          test -s "$SRC/vmlinux"
+          readelf -h "$SRC/vmlinux" | grep -q 'Machine:.*ARM'
+
+          for opt in DRM_AMDGPU DRM_NOUVEAU DRM_RADEON DRM_I915 DRM_XE \
+            BLK_DEV_NVME NVME_CORE SCSI_MPI3MR; do
+            if grep -Eq "^CONFIG_$opt=(y|m)$" "$SRC/.config"; then
+              echo "::error::Forbidden driver enabled: CONFIG_$opt"
+              exit 1
+            fi
+          done
+
+          find "$SRC" -type f -name '*.ko' -print \
+            | sed "s#^$SRC/##" | sort > "$GITHUB_WORKSPACE/v9-module-inventory.txt"
+          {
+            echo "Built module count: $(wc -l < "$GITHUB_WORKSPACE/v9-module-inventory.txt")"
+            echo
+            echo "[RPi2 USB / network / audio modules]"
+            grep -E '/(dwc2|smsc95xx|usbnet|usb-storage|snd-usb-audio)\.ko$' \
+              "$GITHUB_WORKSPACE/v9-module-inventory.txt" || true
+          } | tee "$GITHUB_WORKSPACE/v9-driver-audit.txt"
+
+      - name: Verify exact vermagic and mandatory zero-CRC exports
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sample="$(find "$SRC" -type f -name '*.ko' -print -quit)"
+          test -n "$sample"
+          built_vermagic="$(modinfo -F vermagic "$sample" | xargs)"
+          [[ "$built_vermagic" == "$EXPECTED_VERMAGIC" ]] || {
+            echo "::error::Built module vermagic mismatch."
+            echo "Expected: $EXPECTED_VERMAGIC"
+            echo "Actual: $built_vermagic"
+            exit 1
+          }
+          grep -qx '# CONFIG_MODVERSIONS is not set' "$SRC/.config"
+
+          for sym in __check_object_size fortify_panic page_address; do
+            awk -v s="$sym" \
+              '$2 == s && $1 == "0x00000000" && $4 == "EXPORT_SYMBOL" {ok=1} END {exit !ok}' \
+              "$SRC/Module.symvers" || {
+                echo "::error::Required zero-CRC EXPORT_SYMBOL missing: $sym"
+                grep -w "$sym" "$SRC/Module.symvers" || true
+                exit 1
+              }
+          done
+
+          missing_total=0
+          {
+            echo "V9 Diretta static ABI report"
+            echo "Kernel release: $KERNEL_RELEASE"
+            echo "Built module vermagic: $built_vermagic"
+            echo "CONFIG_MODVERSIONS: disabled"
+            echo
+            echo "[Mandatory exports]"
+            for sym in __check_object_size fortify_panic page_address; do
+              awk -v s="$sym" '$2 == s {print}' "$SRC/Module.symvers"
+            done
+            echo
+            for name in alsa_bridge.ko diretta_direct.ko; do
+              imports="$GITHUB_WORKSPACE/.work/diretta/$name.imports"
+              missing="$GITHUB_WORKSPACE/.work/diretta/$name.missing"
+              : > "$missing"
+              while IFS= read -r symbol; do
+                [[ -n "$symbol" ]] || continue
+                if ! awk -v s="$symbol" '$2 == s {found=1} END {exit !found}' "$SRC/Module.symvers"; then
+                  echo "$symbol" >> "$missing"
+                fi
+              done < "$imports"
+              count="$(wc -l < "$missing")"
+              missing_total=$((missing_total + count))
+              echo "[$name]"
+              echo "Imported symbols: $(wc -l < "$imports")"
+              echo "Missing target exports: $count"
+              if [[ "$count" -gt 0 ]]; then sed 's/^/  MISSING: /' "$missing"; fi
+              echo
+            done
+            echo "Total missing imported symbols: $missing_total"
+            echo "Static checks do not prove private structure layout or runtime ABI."
+          } | tee "$GITHUB_WORKSPACE/diretta-v9-compatibility-report.txt"
+
+          if [[ "$missing_total" -ne 0 ]]; then
+            echo "::error::Diretta module imports are missing from target kernel/module exports."
+            exit 1
+          fi
+
+      - name: Package kernel7.img, initramfs7, DTB and matching modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PKG="$GITHUB_WORKSPACE/package"
+          MODDIR="$PKG/lib/modules/$KERNEL_RELEASE"
+          INITROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
+          mkdir -p "$PKG/boot" "$PKG/build-info" "$MODDIR/extra/diretta" \
+            "$INITROOT/usr/lib/modules"
+
+          install -m 0644 "$SRC/arch/arm/boot/zImage" "$PKG/boot/kernel7.img"
+          install -m 0644 "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb" \
+            "$PKG/boot/bcm2836-rpi-2-b.dtb"
+
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            INSTALL_MOD_PATH="$PKG" modules_install
+          rm -f "$MODDIR/build" "$MODDIR/source"
+
+          install -m 0644 modules/diretta/alsa_bridge.ko "$MODDIR/extra/diretta/"
+          install -m 0644 modules/diretta/diretta_direct.ko "$MODDIR/extra/diretta/"
+          depmod -b "$PKG" "$KERNEL_RELEASE"
+          test -s "$MODDIR/modules.dep"
+          test -s "$MODDIR/modules.alias"
+
+          # The SD/MMC, partition parser and ext4 path are built-in. initramfs7
+          # carries this exact release's modules; it intentionally has no /init.
+          cp -a "$MODDIR" "$INITROOT/usr/lib/modules/$KERNEL_RELEASE"
+          (
+            cd "$INITROOT"
+            find . -print0 | LC_ALL=C sort -z \
+              | cpio --null --create --format=newc --owner=0:0
+          ) | gzip -1n > "$PKG/boot/initramfs7"
+
+          test -s "$PKG/boot/initramfs7"
+          gzip -t "$PKG/boot/initramfs7"
+          gzip -dc "$PKG/boot/initramfs7" | cpio -it \
+            > "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" \
+            "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "extra/diretta/alsa_bridge.ko" \
+            "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "extra/diretta/diretta_direct.ko" \
+            "$PKG/build-info/initramfs7.contents.txt"
+
+          # Keep existing overlays/settings and explicitly select V9 boot files.
+          python3 - "$GITHUB_WORKSPACE/rpi-boot/config.txt" "$PKG/boot/config.txt" <<'PY'
+          import sys
+          from pathlib import Path
+          src, dst = map(Path, sys.argv[1:])
+          lines = src.read_text().splitlines()
+          out = []
+          for line in lines:
+              s = line.strip()
+              if s.startswith(("kernel=", "device_tree=", "initramfs ", "auto_initramfs=")):
+                  continue
+              out.append(line)
+          out += [
+              "",
+              "[all]",
+              "kernel=kernel7.img",
+              "device_tree=bcm2836-rpi-2-b.dtb",
+              "auto_initramfs=0",
+              "initramfs initramfs7 followkernel",
+              "",
+          ]
+          dst.write_text("\n".join(out))
+          PY
+          install -m 0644 rpi-boot/cmdline.txt "$PKG/boot/cmdline.txt"
+
+          install -m 0644 "$SRC/.config" "$PKG/build-info/v9-final.config"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 "$GITHUB_WORKSPACE/a20-original-Module.symvers" "$PKG/build-info/"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          install -m 0644 "$SRC/vmlinux" "$PKG/build-info/vmlinux"
+          install -m 0644 "$GITHUB_WORKSPACE/$HARDWARE_CONFIG" "$PKG/build-info/"
+          install -m 0644 "$GITHUB_WORKSPACE/$ABI_FRAGMENT" "$PKG/build-info/"
+          for f in v9-config-audit.txt v9-driver-audit.txt v9-module-inventory.txt \
+            diretta-v9-compatibility-report.txt fedora-source-provenance.txt \
+            srpm-identification.txt; do
+            install -m 0644 "$GITHUB_WORKSPACE/$f" "$PKG/build-info/"
+          done
+
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2 Model B / Fedora 36 / Diretta kernel V9
+          Kernel release: $KERNEL_RELEASE
+          Source: Fedora 36 kernel SRPM 6.2.15-100 + Fedora patchset
+          Hardware base: $HARDWARE_CONFIG
+          ABI fragment: $ABI_FRAGMENT
+
+          Boot files:
+            boot/kernel7.img
+            boot/initramfs7
+            boot/bcm2836-rpi-2-b.dtb
+            boot/config.txt
+            boot/cmdline.txt
+
+          Modules:
+            lib/modules/$KERNEL_RELEASE/
+
+          Original Diretta modules are included unchanged:
+            lib/modules/$KERNEL_RELEASE/extra/diretta/alsa_bridge.ko
+            lib/modules/$KERNEL_RELEASE/extra/diretta/diretta_direct.ko
+
+          initramfs7 is a gzip-compressed newc archive containing this exact
+          kernel release's modules under /usr/lib/modules/$KERNEL_RELEASE.
+          It has no /init userspace. The kernel mounts the ext4 PARTUUID root
+          directly because SD/MMC, partition parsing and ext4 are built-in.
+
+          cmdline.txt is copied unchanged. Verify its root PARTUUID matches
+          the Fedora 36 SD card before installation.
+
+          Mandatory ABI gates: CONFIG_MODVERSIONS disabled; both original
+          module vermagic strings match exactly; __check_object_size,
+          fortify_panic and page_address are zero-CRC EXPORT_SYMBOL entries.
+
+          Static checks do not guarantee runtime ABI. Back up the SD card
+          before testing boot, Ethernet, USB Audio and both Diretta modules.
+          EOF
+
+          (cd "$PKG" && find boot lib -type f -print0 | sort -z | xargs -0 sha256sum) \
+            > "$PKG/build-info/PACKAGE-SHA256SUMS.txt"
+          cd "$GITHUB_WORKSPACE"
+          tar -czf "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz" package
+          sha256sum "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz" \
+            > "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz.sha256"
+
+      - name: Upload V9 package and audit reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2b-fedora36-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v9
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2b-fedora36-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v9.tar.gz
+            rpi2b-fedora36-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v9.tar.gz.sha256
+            output-v9-rpi2b.config
+            v9-vs-bcm2709-defconfig.diff
+            v9-config-audit.txt
+            v9-driver-audit.txt
+            v9-module-inventory.txt
+            diretta-v9-compatibility-report.txt
+            fedora-source-provenance.txt
+            srpm-identification.txt
+            a20-original-Module.symvers
+            package/README.txt
+            package/boot/**
+            package/build-info/**
+ .config; then
+            echo "::error::A non-RPi2 vendor-specific platform driver remains enabled."
+            grep -E '^CONFIG_(INTEL|AMD|NVIDIA|DELL|HP|ACER|ASUS|LENOVO|THINKPAD|APPLE)_[A-Z0-9_]+=(y|m)
+          release="$(make -s ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
+          echo "Resolved kernelrelease: $release"
+          [[ "$release" == "$EXPECTED_KERNEL_RELEASE" ]] || {
+            echo "::error::Kernel release mismatch: $release"
+            exit 1
+          }
+          echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
+
+          {
+            echo "V9 hardware base: $HARDWARE_CONFIG"
+            echo "Fedora source: Linux 6.2.15 + SRPM patch-6.2-redhat.patch"
+            echo "ABI fragment: $ABI_FRAGMENT"
+            echo "Kernel release: $release"
+            echo
+            echo "[ABI and boot options]"
+            grep -E '^(CONFIG_(LOCALVERSION|ARCH_BCM2835|CPU_V7|AEABI|ARM_PATCH_PHYS_VIRT|NEON|KERNEL_MODE_NEON|SMP|PREEMPT|MODULES|MODULE_UNLOAD|HIGHMEM|HARDENED_USERCOPY|FORTIFY_SOURCE|BLK_DEV_INITRD|DEVTMPFS|DEVTMPFS_MOUNT|MSDOS_PARTITION|EXT4_FS|MMC|MMC_BLOCK|MMC_BCM2835|USB_DWC2|USB_NET_SMSC95XX|USB_USBNET|USB_STORAGE|SND|SND_PCM|SND_TIMER|SND_USB_AUDIO)=|# CONFIG_(MODVERSIONS|MODULE_SIG|MODULE_SIG_FORCE|MODULE_SIG_ALL|THUMB2_KERNEL|PREEMPT_RT|LOCALVERSION_AUTO) is not set)' .config || true
+            echo
+            echo "[Forbidden driver disable results]"
+            grep -E "^# CONFIG_($forbidden) is not set$" .config || true
+          } > "$GITHUB_WORKSPACE/v9-config-audit.txt"
+
+      - name: Build zImage, modules and Raspberry Pi 2 device tree
+        shell: bash
+        env:
+          BUILD_JOBS: ${{ inputs.jobs }}
+        run: |
+          set -Eeuo pipefail
+          jobs="$BUILD_JOBS"
+          [[ -n "$jobs" && "$jobs" != "0" ]] || jobs="$(nproc)"
+          [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::Invalid build jobs: $jobs"
+            exit 1
+          }
+
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            -j"$jobs" zImage modules dtbs
+
+          test -s "$SRC/arch/arm/boot/zImage"
+          test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
+          test -s "$SRC/Module.symvers"
+          test -s "$SRC/System.map"
+          test -s "$SRC/vmlinux"
+          readelf -h "$SRC/vmlinux" | grep -q 'Machine:.*ARM'
+
+          for opt in DRM_AMDGPU DRM_NOUVEAU DRM_RADEON DRM_I915 DRM_XE \
+            BLK_DEV_NVME NVME_CORE SCSI_MPI3MR; do
+            if grep -Eq "^CONFIG_$opt=(y|m)$" "$SRC/.config"; then
+              echo "::error::Forbidden driver enabled: CONFIG_$opt"
+              exit 1
+            fi
+          done
+
+          find "$SRC" -type f -name '*.ko' -print \
+            | sed "s#^$SRC/##" | sort > "$GITHUB_WORKSPACE/v9-module-inventory.txt"
+          {
+            echo "Built module count: $(wc -l < "$GITHUB_WORKSPACE/v9-module-inventory.txt")"
+            echo
+            echo "[RPi2 USB / network / audio modules]"
+            grep -E '/(dwc2|smsc95xx|usbnet|usb-storage|snd-usb-audio)\.ko$' \
+              "$GITHUB_WORKSPACE/v9-module-inventory.txt" || true
+          } | tee "$GITHUB_WORKSPACE/v9-driver-audit.txt"
+
+      - name: Verify exact vermagic and mandatory zero-CRC exports
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sample="$(find "$SRC" -type f -name '*.ko' -print -quit)"
+          test -n "$sample"
+          built_vermagic="$(modinfo -F vermagic "$sample" | xargs)"
+          [[ "$built_vermagic" == "$EXPECTED_VERMAGIC" ]] || {
+            echo "::error::Built module vermagic mismatch."
+            echo "Expected: $EXPECTED_VERMAGIC"
+            echo "Actual: $built_vermagic"
+            exit 1
+          }
+          grep -qx '# CONFIG_MODVERSIONS is not set' "$SRC/.config"
+
+          for sym in __check_object_size fortify_panic page_address; do
+            awk -v s="$sym" \
+              '$2 == s && $1 == "0x00000000" && $4 == "EXPORT_SYMBOL" {ok=1} END {exit !ok}' \
+              "$SRC/Module.symvers" || {
+                echo "::error::Required zero-CRC EXPORT_SYMBOL missing: $sym"
+                grep -w "$sym" "$SRC/Module.symvers" || true
+                exit 1
+              }
+          done
+
+          missing_total=0
+          {
+            echo "V9 Diretta static ABI report"
+            echo "Kernel release: $KERNEL_RELEASE"
+            echo "Built module vermagic: $built_vermagic"
+            echo "CONFIG_MODVERSIONS: disabled"
+            echo
+            echo "[Mandatory exports]"
+            for sym in __check_object_size fortify_panic page_address; do
+              awk -v s="$sym" '$2 == s {print}' "$SRC/Module.symvers"
+            done
+            echo
+            for name in alsa_bridge.ko diretta_direct.ko; do
+              imports="$GITHUB_WORKSPACE/.work/diretta/$name.imports"
+              missing="$GITHUB_WORKSPACE/.work/diretta/$name.missing"
+              : > "$missing"
+              while IFS= read -r symbol; do
+                [[ -n "$symbol" ]] || continue
+                if ! awk -v s="$symbol" '$2 == s {found=1} END {exit !found}' "$SRC/Module.symvers"; then
+                  echo "$symbol" >> "$missing"
+                fi
+              done < "$imports"
+              count="$(wc -l < "$missing")"
+              missing_total=$((missing_total + count))
+              echo "[$name]"
+              echo "Imported symbols: $(wc -l < "$imports")"
+              echo "Missing target exports: $count"
+              if [[ "$count" -gt 0 ]]; then sed 's/^/  MISSING: /' "$missing"; fi
+              echo
+            done
+            echo "Total missing imported symbols: $missing_total"
+            echo "Static checks do not prove private structure layout or runtime ABI."
+          } | tee "$GITHUB_WORKSPACE/diretta-v9-compatibility-report.txt"
+
+          if [[ "$missing_total" -ne 0 ]]; then
+            echo "::error::Diretta module imports are missing from target kernel/module exports."
+            exit 1
+          fi
+
+      - name: Package kernel7.img, initramfs7, DTB and matching modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PKG="$GITHUB_WORKSPACE/package"
+          MODDIR="$PKG/lib/modules/$KERNEL_RELEASE"
+          INITROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
+          mkdir -p "$PKG/boot" "$PKG/build-info" "$MODDIR/extra/diretta" \
+            "$INITROOT/usr/lib/modules"
+
+          install -m 0644 "$SRC/arch/arm/boot/zImage" "$PKG/boot/kernel7.img"
+          install -m 0644 "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb" \
+            "$PKG/boot/bcm2836-rpi-2-b.dtb"
+
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            INSTALL_MOD_PATH="$PKG" modules_install
+          rm -f "$MODDIR/build" "$MODDIR/source"
+
+          install -m 0644 modules/diretta/alsa_bridge.ko "$MODDIR/extra/diretta/"
+          install -m 0644 modules/diretta/diretta_direct.ko "$MODDIR/extra/diretta/"
+          depmod -b "$PKG" "$KERNEL_RELEASE"
+          test -s "$MODDIR/modules.dep"
+          test -s "$MODDIR/modules.alias"
+
+          # The SD/MMC, partition parser and ext4 path are built-in. initramfs7
+          # carries this exact release's modules; it intentionally has no /init.
+          cp -a "$MODDIR" "$INITROOT/usr/lib/modules/$KERNEL_RELEASE"
+          (
+            cd "$INITROOT"
+            find . -print0 | LC_ALL=C sort -z \
+              | cpio --null --create --format=newc --owner=0:0
+          ) | gzip -1n > "$PKG/boot/initramfs7"
+
+          test -s "$PKG/boot/initramfs7"
+          gzip -t "$PKG/boot/initramfs7"
+          gzip -dc "$PKG/boot/initramfs7" | cpio -it \
+            > "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" \
+            "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "extra/diretta/alsa_bridge.ko" \
+            "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "extra/diretta/diretta_direct.ko" \
+            "$PKG/build-info/initramfs7.contents.txt"
+
+          # Keep existing overlays/settings and explicitly select V9 boot files.
+          python3 - "$GITHUB_WORKSPACE/rpi-boot/config.txt" "$PKG/boot/config.txt" <<'PY'
+          import sys
+          from pathlib import Path
+          src, dst = map(Path, sys.argv[1:])
+          lines = src.read_text().splitlines()
+          out = []
+          for line in lines:
+              s = line.strip()
+              if s.startswith(("kernel=", "device_tree=", "initramfs ", "auto_initramfs=")):
+                  continue
+              out.append(line)
+          out += [
+              "",
+              "[all]",
+              "kernel=kernel7.img",
+              "device_tree=bcm2836-rpi-2-b.dtb",
+              "auto_initramfs=0",
+              "initramfs initramfs7 followkernel",
+              "",
+          ]
+          dst.write_text("\n".join(out))
+          PY
+          install -m 0644 rpi-boot/cmdline.txt "$PKG/boot/cmdline.txt"
+
+          install -m 0644 "$SRC/.config" "$PKG/build-info/v9-final.config"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 "$GITHUB_WORKSPACE/a20-original-Module.symvers" "$PKG/build-info/"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          install -m 0644 "$SRC/vmlinux" "$PKG/build-info/vmlinux"
+          install -m 0644 "$GITHUB_WORKSPACE/$HARDWARE_CONFIG" "$PKG/build-info/"
+          install -m 0644 "$GITHUB_WORKSPACE/$ABI_FRAGMENT" "$PKG/build-info/"
+          for f in v9-config-audit.txt v9-driver-audit.txt v9-module-inventory.txt \
+            diretta-v9-compatibility-report.txt fedora-source-provenance.txt \
+            srpm-identification.txt; do
+            install -m 0644 "$GITHUB_WORKSPACE/$f" "$PKG/build-info/"
+          done
+
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2 Model B / Fedora 36 / Diretta kernel V9
+          Kernel release: $KERNEL_RELEASE
+          Source: Fedora 36 kernel SRPM 6.2.15-100 + Fedora patchset
+          Hardware base: $HARDWARE_CONFIG
+          ABI fragment: $ABI_FRAGMENT
+
+          Boot files:
+            boot/kernel7.img
+            boot/initramfs7
+            boot/bcm2836-rpi-2-b.dtb
+            boot/config.txt
+            boot/cmdline.txt
+
+          Modules:
+            lib/modules/$KERNEL_RELEASE/
+
+          Original Diretta modules are included unchanged:
+            lib/modules/$KERNEL_RELEASE/extra/diretta/alsa_bridge.ko
+            lib/modules/$KERNEL_RELEASE/extra/diretta/diretta_direct.ko
+
+          initramfs7 is a gzip-compressed newc archive containing this exact
+          kernel release's modules under /usr/lib/modules/$KERNEL_RELEASE.
+          It has no /init userspace. The kernel mounts the ext4 PARTUUID root
+          directly because SD/MMC, partition parsing and ext4 are built-in.
+
+          cmdline.txt is copied unchanged. Verify its root PARTUUID matches
+          the Fedora 36 SD card before installation.
+
+          Mandatory ABI gates: CONFIG_MODVERSIONS disabled; both original
+          module vermagic strings match exactly; __check_object_size,
+          fortify_panic and page_address are zero-CRC EXPORT_SYMBOL entries.
+
+          Static checks do not guarantee runtime ABI. Back up the SD card
+          before testing boot, Ethernet, USB Audio and both Diretta modules.
+          EOF
+
+          (cd "$PKG" && find boot lib -type f -print0 | sort -z | xargs -0 sha256sum) \
+            > "$PKG/build-info/PACKAGE-SHA256SUMS.txt"
+          cd "$GITHUB_WORKSPACE"
+          tar -czf "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz" package
+          sha256sum "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz" \
+            > "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz.sha256"
+
+      - name: Upload V9 package and audit reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2b-fedora36-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v9
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2b-fedora36-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v9.tar.gz
+            rpi2b-fedora36-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v9.tar.gz.sha256
+            output-v9-rpi2b.config
+            v9-vs-bcm2709-defconfig.diff
+            v9-config-audit.txt
+            v9-driver-audit.txt
+            v9-module-inventory.txt
+            diretta-v9-compatibility-report.txt
+            fedora-source-provenance.txt
+            srpm-identification.txt
+            a20-original-Module.symvers
+            package/README.txt
+            package/boot/**
+            package/build-info/**
+ .config
             exit 1
           fi
 
