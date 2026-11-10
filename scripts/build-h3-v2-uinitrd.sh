@@ -23,18 +23,26 @@ GZIP="$WORK/initramfs.cpio.gz"
   exit 1
 }
 for cmd in dumpimage mkimage depmod cpio gzip modinfo; do
-  command -v "$cmd" >/dev/null || { echo "::error::Missing required command: $cmd"; exit 1; }
+  command -v "$cmd" >/dev/null || {
+    echo "::error::Missing required command: $cmd"
+    exit 1
+  }
 done
 
 rm -rf "$WORK"
 mkdir -p "$STAGE" "$WORK"
 
-dumpimage -l "$ORIGINAL" | grep -q 'Image Type:.*RAMDisk Image'
+dumpimage -l "$ORIGINAL" > "$WORK/original-header.txt"
+grep -q 'Image Type:.*RAMDisk Image' "$WORK/original-header.txt"
+grep -q 'Architecture:.*ARM' "$WORK/original-header.txt"
 dumpimage -p 0 -o "$PAYLOAD" "$ORIGINAL"
 gzip -t "$PAYLOAD"
 gzip -dc "$PAYLOAD" | (cd "$STAGE" && cpio -idm --quiet --no-absolute-filenames)
 
-[[ -f "$STAGE/init" ]] || { echo "::error::Original initramfs /init is missing"; exit 1; }
+[[ -f "$STAGE/init" ]] || {
+  echo "::error::Original initramfs /init is missing"
+  exit 1
+}
 [[ -f "$STAGE/scripts/local" && -f "$STAGE/scripts/functions" ]] || {
   echo "::error::Original initramfs-tools boot scripts are incomplete"
   exit 1
@@ -49,7 +57,7 @@ mkdir -p "$MODULES"
 find "$MODULES" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 cp -a "$PKG/lib/modules/$KERNEL_RELEASE" "$MODULES/$KERNEL_RELEASE"
 
-# /lib is the original symlink to /usr/lib, so depmod writes the expected tree.
+# /lib is the original symlink to /usr/lib; depmod writes indexes into that tree.
 depmod -b "$STAGE" "$KERNEL_RELEASE"
 
 NEW_MODULE_DIR="$MODULES/$KERNEL_RELEASE"
@@ -64,10 +72,10 @@ NEW_MODULE_DIR="$MODULES/$KERNEL_RELEASE"
 
 CONFIG="$PKG/build-info/orangepi-pc.config"
 for sym in CONFIG_MMC CONFIG_MMC_SUNXI CONFIG_EXT4_FS CONFIG_DEVTMPFS; do
-  if ! grep -Eq "^$sym=y$|^$sym=m$" "$CONFIG"; then
+  grep -Eq "^$sym=y$|^$sym=m$" "$CONFIG" || {
     echo "::error::Required early-boot kernel option is absent: $sym"
     exit 1
-  fi
+  }
 done
 
 (
@@ -86,28 +94,14 @@ grep -q 'Architecture:.*ARM' "$WORK/new-uinitrd-header.txt"
 dumpimage -p 0 -o "$WORK/check.gz" "$OUTPUT"
 gzip -t "$WORK/check.gz"
 gzip -dc "$WORK/check.gz" | cpio -it --quiet > "$WORK/new-file-list.txt"
-grep -Eq '^(\\./)?init
-grep -Eq "^(\\./)?usr/lib/modules/$KERNEL_RELEASE/" "$WORK/new-file-list.txt"
-
-KO="$(find "$NEW_MODULE_DIR" -type f -name '*.ko' -print -quit)"
-VM="$(modinfo -F vermagic "$KO" | xargs)"
-[[ "$VM" == "$KERNEL_RELEASE"* ]] || {
-  echo "::error::Initramfs module vermagic does not match kernel release: $VM"
+grep -Eq '^(\\./)?init$' "$WORK/new-file-list.txt" || {
+  echo "::error::Rebuilt initramfs /init is missing"
   exit 1
 }
-
-{
-  echo "Original uInitrd SHA256: $(sha256sum "$ORIGINAL" | awk '{print $1}')"
-  echo "New uInitrd SHA256: $(sha256sum "$OUTPUT" | awk '{print $1}')"
-  echo "Kernel release: $KERNEL_RELEASE"
-  echo "Module files in initramfs: $(find "$NEW_MODULE_DIR" -type f -name '*.ko' | wc -l | tr -d ' ')"
-  echo "Module tree size: $(du -sh "$NEW_MODULE_DIR" | awk '{print $1}')"
-  echo "Compressed initramfs payload: $(stat -c '%s' "$GZIP") bytes"
-  echo "U-Boot uInitrd: $(stat -c '%s' "$OUTPUT") bytes"
-  echo "Module vermagic sample: $VM"
-} | tee "$PKG/build-info/uinitrd-build-report.txt"
- "$WORK/new-file-list.txt"
-grep -q "^usr/lib/modules/$KERNEL_RELEASE/" "$WORK/new-file-list.txt"
+grep -Eq "^(\\./)?usr/lib/modules/$KERNEL_RELEASE/" "$WORK/new-file-list.txt" || {
+  echo "::error::Rebuilt initramfs module directory does not match $KERNEL_RELEASE"
+  exit 1
+}
 
 KO="$(find "$NEW_MODULE_DIR" -type f -name '*.ko' -print -quit)"
 VM="$(modinfo -F vermagic "$KO" | xargs)"
