@@ -67,10 +67,12 @@ for mod in "$ALSA" "$DIRECT"; do
 done
 cat "$ROOT/.work/diretta-strict/"*.exports | sort -u > "$ROOT/.work/diretta-strict/peer.exports"
 awk 'NF>=2 {print $2}' "$SRC/Module.symvers" | sort -u > "$ROOT/.work/diretta-strict/kernel.exports"
-cat "$ROOT/.work/diretta-strict/kernel.exports" "$ROOT/.work/diretta-strict/peer.exports" | sort -u > "$ROOT/.work/diretta-strict/all.exports"
 for mod in "$ALSA" "$DIRECT"; do
   name="$(basename "$mod")"
-  comm -23 "$ROOT/.work/diretta-strict/$name.imports" "$ROOT/.work/diretta-strict/all.exports" > "$ROOT/.work/diretta-strict/$name.missing"
+  peer="diretta_direct.ko"
+  [[ "$name" == "diretta_direct.ko" ]] && peer="alsa_bridge.ko"
+  cat "$ROOT/.work/diretta-strict/kernel.exports" "$ROOT/.work/diretta-strict/$peer.exports" | sort -u > "$ROOT/.work/diretta-strict/$name.allowed"
+  comm -23 "$ROOT/.work/diretta-strict/$name.imports" "$ROOT/.work/diretta-strict/$name.allowed" > "$ROOT/.work/diretta-strict/$name.missing"
   if [[ -s "$ROOT/.work/diretta-strict/$name.missing" ]]; then
     cat "$ROOT/.work/diretta-strict/$name.missing"
     fail "$name has unresolved imports against this kernel and the peer module"
@@ -99,7 +101,7 @@ pahole -C module "$SRC/vmlinux" > "$ROOT/.work/diretta-strict/struct-module.txt"
 STRUCT_SIZE="$(sed -nE 's@.*size:[[:space:]]*([0-9]+),[[:space:]]*cachelines.*@\1@p' "$ROOT/.work/diretta-strict/struct-module.txt" | tail -n1)"
 [[ "$STRUCT_SIZE" =~ ^[0-9]+$ ]] || fail "Could not parse struct module size from pahole output"
 for mod in "$ALSA" "$DIRECT"; do
-  SECTION_HEX="$(readelf -SW "$mod" | awk '$2==".gnu.linkonce.this_module" {print $6; exit}')"
+  SECTION_HEX="$(readelf -SW "$mod" | awk '{for(i=1;i<=NF;i++) if($i==".gnu.linkonce.this_module"){print $(i+4); exit}}')"
   [[ "$SECTION_HEX" =~ ^[0-9a-fA-F]+$ ]] || fail "$(basename "$mod"): missing .gnu.linkonce.this_module section"
   SECTION_SIZE=$((16#$SECTION_HEX))
   [[ "$SECTION_SIZE" -eq "$STRUCT_SIZE" ]] || fail "$(basename "$mod"): this_module section=$SECTION_SIZE, kernel struct module=$STRUCT_SIZE"
