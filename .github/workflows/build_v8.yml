@@ -223,6 +223,12 @@ jobs:
           done
           grep -qx '# CONFIG_MODVERSIONS is not set' .config
           grep -qx '# CONFIG_MODULE_SIG_FORCE is not set' .config
+          for option in CONFIG_DRM_AMDGPU CONFIG_DRM_NOUVEAU CONFIG_DRM_RADEON CONFIG_SCSI_MPI3MR; do
+            grep -qx "# ${option} is not set" .config || {
+              echo "::error::Unrelated driver remains enabled: $option"
+              exit 1
+            }
+          done
           grep -qx '# CONFIG_LOCALVERSION_AUTO is not set' .config
 
           # Pi 2 SD-root must work without an initramfs.
