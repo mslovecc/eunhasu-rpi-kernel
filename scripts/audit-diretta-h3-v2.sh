@@ -141,7 +141,7 @@ COMPAT="$(fdtget -t s "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb" / compa
 [[ "$MODEL" == "Xunlong Orange Pi PC" && "$COMPAT" == *"xunlong,orangepi-pc"* ]] || fail "Packaged DTB identity mismatch: $MODEL / $COMPAT"
 
 dumpimage -l "$PKG/boot/uInitrd" > "$WORK/uinitrd-header.txt"
-grep -q 'Image Type:.*RAMDisk Image' "$WORK/uinitrd-header.txt" || fail "uInitrd is not a U-Boot RAMDisk image"
+grep -Eq 'Image Type:.*ARM Linux RAMDisk Image' "$WORK/uinitrd-header.txt" || fail "uInitrd is not a U-Boot RAMDisk image"
 grep -q 'Architecture:.*ARM' "$WORK/uinitrd-header.txt" || fail "uInitrd architecture is not ARM"
 dumpimage -p 0 -o "$WORK/uinitrd-payload.gz" "$PKG/boot/uInitrd"
 gzip -t "$WORK/uinitrd-payload.gz" || fail "uInitrd gzip payload is corrupt"
