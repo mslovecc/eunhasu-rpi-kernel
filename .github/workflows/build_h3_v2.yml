@@ -83,6 +83,8 @@ jobs:
             scripts/prepare-h3-v2-config.sh \
             scripts/audit-diretta-h3-v2.sh \
             scripts/package-h3.sh \
+            scripts/download-h3-v2-boot-assets.sh \
+            scripts/build-h3-v2-uinitrd.sh \
             "$SUPPORT_DIR/kernel.spec" \
             "$SUPPORT_DIR/patch-6.2-redhat.patch" \
             "$SUPPORT_DIR/Makefile.rhelver" \
@@ -97,14 +99,16 @@ jobs:
             scripts/download-h3-v2-sources.sh \
             scripts/prepare-h3-v2-config.sh \
             scripts/audit-diretta-h3-v2.sh \
-            scripts/package-h3.sh
+            scripts/package-h3.sh \
+            scripts/download-h3-v2-boot-assets.sh \
+            scripts/build-h3-v2-uinitrd.sh
 
           for f in \
             scripts/download-h3-v2-sources.sh \
             scripts/prepare-h3-v2-config.sh \
             scripts/audit-diretta-h3-v2.sh \
-            scripts/package-h3.sh \\
-            scripts/download-h3-v2-boot-assets.sh \\
+            scripts/package-h3.sh \
+            scripts/download-h3-v2-boot-assets.sh \
             scripts/build-h3-v2-uinitrd.sh; do
             bash -n "$f"
             test -x "$f"
@@ -233,7 +237,7 @@ jobs:
           bash scripts/package-h3.sh "$SRC" "$KERNEL_RELEASE"
           bash scripts/audit-diretta-h3-v2.sh "$SRC" "$GITHUB_WORKSPACE/package-orangepi-pc"
 
-          install -m 0644 .work/original-boot/original-boot-assets-report.txt \\
+          install -m 0644 .work/original-boot/original-boot-assets-report.txt \
             package-orangepi-pc/build-info/original-boot-assets-report.txt
           install -m 0644 diretta-h3-v2-compatibility-report.txt \
             package-orangepi-pc/build-info/diretta-h3-v2-compatibility-report.txt
