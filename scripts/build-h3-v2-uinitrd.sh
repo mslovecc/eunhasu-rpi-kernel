@@ -34,7 +34,6 @@ mkdir -p "$STAGE" "$WORK"
 
 dumpimage -l "$ORIGINAL" > "$WORK/original-header.txt"
 grep -Eq 'Image Type:.*ARM Linux RAMDisk Image' "$WORK/original-header.txt"
- "$WORK/original-header.txt"
 dumpimage -p 0 -o "$PAYLOAD" "$ORIGINAL"
 gzip -t "$PAYLOAD"
 gzip -dc "$PAYLOAD" | (cd "$STAGE" && cpio -idm --quiet --no-absolute-filenames)
@@ -90,7 +89,6 @@ mkimage -A arm -O linux -T ramdisk -C gzip \
 
 dumpimage -l "$OUTPUT" > "$WORK/new-uinitrd-header.txt"
 grep -Eq 'Image Type:.*ARM Linux RAMDisk Image' "$WORK/new-uinitrd-header.txt"
- "$WORK/new-uinitrd-header.txt"
 dumpimage -p 0 -o "$WORK/check.gz" "$OUTPUT"
 gzip -t "$WORK/check.gz"
 gzip -dc "$WORK/check.gz" | cpio -it --quiet > "$WORK/new-file-list.txt"
