@@ -61,6 +61,25 @@ grep -Eq '^(\./)?init$' "$OUT/original-initramfs-file-list.txt" || {
   exit 1
 }
 
+# Validate the exact initramfs layout needed by the module-tree replacement
+# before any kernel compilation begins.
+ROOT_CHECK="$OUT/preflight-root"
+rm -rf "$ROOT_CHECK"
+mkdir -p "$ROOT_CHECK"
+gzip -dc "$PAYLOAD" | (cd "$ROOT_CHECK" && cpio -idm --quiet --no-absolute-filenames)
+[[ -f "$ROOT_CHECK/init" ]] || {
+  echo "::error::Original initramfs /init is missing"
+  exit 1
+}
+[[ -f "$ROOT_CHECK/scripts/local" && -f "$ROOT_CHECK/scripts/functions" ]] || {
+  echo "::error::Original initramfs-tools boot scripts are incomplete"
+  exit 1
+}
+[[ -L "$ROOT_CHECK/lib" && "$(readlink "$ROOT_CHECK/lib")" == "usr/lib" ]] || {
+  echo "::error::Original initramfs /lib must be a symlink to usr/lib"
+  exit 1
+}
+
 MODEL="$(fdtget -t s "$OUT/original-sun8i-h3-orangepi-pc.dtb" / model)"
 COMPAT="$(fdtget -t s "$OUT/original-sun8i-h3-orangepi-pc.dtb" / compatible)"
 [[ "$MODEL" == "Xunlong Orange Pi PC" && "$COMPAT" == *"xunlong,orangepi-pc"* ]] || {
@@ -72,7 +91,15 @@ COMPAT="$(fdtget -t s "$OUT/original-sun8i-h3-orangepi-pc.dtb" / compatible)"
   echo "Original U-Boot uInitrd SHA256: $UINITRD_SHA256"
   echo "Original uInitrd bytes: $(stat -c '%s' "$OUT/original-uInitrd")"
   echo "Original initramfs entries: $(wc -l < "$OUT/original-initramfs-file-list.txt" | tr -d ' ')"
-  echo "Original initramfs module files: $(grep -c 'ko$' "$OUT/original-initramfs-file-list.txt" || true)"
+  echo "Original initramfs module files: $(grep -c 'ko
+  echo "Release DTB SHA256: $DTB_SHA256"
+  echo "Release DTB bytes: $(stat -c '%s' "$OUT/original-sun8i-h3-orangepi-pc.dtb")"
+  echo "Release DTB model: $MODEL"
+  echo "Release DTB compatible: $COMPAT"
+  echo "U-Boot image header: ARM/Linux RAMDisk"
+} | tee "$OUT/original-boot-assets-report.txt"
+ "$OUT/original-initramfs-file-list.txt" || true)"
+  echo "Original initramfs layout: /init and initramfs-tools scripts present; /lib -> usr/lib"
   echo "Release DTB SHA256: $DTB_SHA256"
   echo "Release DTB bytes: $(stat -c '%s' "$OUT/original-sun8i-h3-orangepi-pc.dtb")"
   echo "Release DTB model: $MODEL"
