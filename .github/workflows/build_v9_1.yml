@@ -176,14 +176,12 @@ jobs:
           set -x
           RPISRC="$GITHUB_WORKSPACE/.work/rpi-linux"
           PATCH="$GITHUB_WORKSPACE/rpi2b-hardware-backport.patch"
+          SNAPSHOT="$GITHUB_WORKSPACE/rpi2b-hardware-backport.tar"
 
-          # Fetch both pinned commits into explicit local refs. Fetching raw
-          # SHA values into FETCH_HEAD twice is ambiguous on shallow clones.
           git clone --filter=blob:none --no-checkout --depth=1 "$RPI_LINUX_REPO" "$RPISRC"
           git -C "$RPISRC" fetch --no-tags --depth=1 origin \
             "+$RPI_BASE_COMMIT:refs/remotes/backport/base" \
             "+$RPI_BACKPORT_COMMIT:refs/remotes/backport/head"
-
           BASE_REF="refs/remotes/backport/base"
           HEAD_REF="refs/remotes/backport/head"
           git -C "$RPISRC" rev-parse --verify "$BASE_REF^{commit}"
@@ -191,8 +189,9 @@ jobs:
           git -C "$RPISRC" cat-file -e "$BASE_REF^{tree}"
           git -C "$RPISRC" cat-file -e "$HEAD_REF^{tree}"
 
-          # Generate only the selected RPi2B hardware changes. Keep Fedora
-          # Linux 6.2.15 as the actual build source.
+          # Keep a diff for provenance, but do not rely on it to import
+          # files that already existed in the RPi base commit and are absent
+          # from upstream Fedora Linux 6.2.15.
           git -C "$RPISRC" diff --binary --no-ext-diff \
             "$BASE_REF" "$HEAD_REF" -- \
             arch/arm/include/asm/irqflags.h \
@@ -210,16 +209,30 @@ jobs:
             drivers/usb/host/dwc_otg \
             > "$PATCH"
 
-          test -s "$PATCH" || { echo "::error::Selected Raspberry Pi diff is empty"; exit 1; }
-          grep -q '^+config USB_DWCOTG' "$PATCH" || { echo "::error::DWCOTG Kconfig addition absent from generated patch"; exit 1; }
-          grep -q '^+.*select FIQ' "$PATCH" || { echo "::error::FIQ Kconfig addition absent from generated patch"; exit 1; }
-          grep -q '^+.*core_initcall(rpi_firmware_init)' "$PATCH" || { echo "::error::Firmware initcall change absent from generated patch"; exit 1; }
-          grep -q '^+.*postcore_initcall(__bcm2835_clk_driver_init)' "$PATCH" || { echo "::error::Clock initcall change absent from generated patch"; exit 1; }
+          # Export complete selected paths from the pinned RPi commit. This
+          # includes unchanged DWCOTG files which a commit-to-commit diff
+          # would omit, but which Fedora's upstream tree does not contain.
+          git -C "$RPISRC" archive --format=tar "$HEAD_REF" \
+            arch/arm/include/asm/irqflags.h \
+            arch/arm/kernel/fiqasm.S \
+            arch/arm/mach-bcm/Kconfig \
+            arch/arm/mach-bcm/board_bcm2835.c \
+            drivers/irqchip/irq-bcm2835.c \
+            drivers/mailbox/bcm2835-mailbox.c \
+            drivers/firmware/raspberrypi.c \
+            drivers/clk/bcm/clk-bcm2835.c \
+            drivers/usb/Makefile \
+            drivers/usb/host/Kconfig \
+            drivers/usb/host/Makefile \
+            drivers/usb/host/dwc_common_port \
+            drivers/usb/host/dwc_otg \
+            > "$SNAPSHOT"
+          test -s "$SNAPSHOT"
+          tar -tf "$SNAPSHOT" | grep -qx 'drivers/usb/host/dwc_otg/dwc_otg_driver.c'
+          tar -tf "$SNAPSHOT" | grep -qx 'drivers/usb/host/dwc_common_port/dwc_common_linux.c'
+          tar -xf "$SNAPSHOT" -C "$SRC"
 
-          # Verify every hunk before applying anything to the Fedora source.
-          (cd "$SRC" && git apply --check "$PATCH")
-          (cd "$SRC" && git apply --whitespace=nowarn "$PATCH")
-
+          # Validate the actual Fedora source tree after overlay.
           test -s "$SRC/drivers/usb/host/dwc_otg/dwc_otg_driver.c"
           test -s "$SRC/drivers/usb/host/dwc_common_port/dwc_common_linux.c"
           grep -q 'config USB_DWCOTG' "$SRC/drivers/usb/host/Kconfig"
@@ -228,17 +241,17 @@ jobs:
           grep -q 'core_initcall(rpi_firmware_init)' "$SRC/drivers/firmware/raspberrypi.c"
           grep -q 'postcore_initcall(__bcm2835_clk_driver_init)' "$SRC/drivers/clk/bcm/clk-bcm2835.c"
 
-          grep '^diff --git ' "$PATCH" > "$GITHUB_WORKSPACE/rpi2b-hardware-backport-file-list.txt"
-          sha256sum "$PATCH" > "$GITHUB_WORKSPACE/rpi2b-hardware-backport.patch.sha256"
+          grep '^diff --git ' "$PATCH" > "$GITHUB_WORKSPACE/rpi2b-hardware-backport-file-list.txt" || true
+          sha256sum "$PATCH" "$SNAPSHOT" > "$GITHUB_WORKSPACE/rpi2b-hardware-backport.sha256"
           {
             echo "Fedora source base: Linux 6.2.15"
-            echo "Upstream base commit: $RPI_BASE_COMMIT"
             echo "Raspberry Pi source commit: $RPI_BACKPORT_COMMIT"
-            echo "Backport scope: BCM2835 FIQ, DWCOTG USB host, mailbox, firmware and clock init ordering"
-            echo "Patch SHA256: $(sha256sum "$PATCH" | awk '{print $1}')"
+            echo "Import method: complete selected-path snapshot from pinned RPi commit"
+            echo "Snapshot SHA256: $(sha256sum "$SNAPSHOT" | awk '{print $1}')"
+            echo "Commit-to-commit diff retained for provenance only; it is not the complete imported source."
             echo
-            echo "Selected changed files:"
-            cat "$GITHUB_WORKSPACE/rpi2b-hardware-backport-file-list.txt"
+            echo "Imported DWCOTG files:"
+            tar -tf "$SNAPSHOT" | grep '^drivers/usb/host/dwc_'
           } | tee "$GITHUB_WORKSPACE/rpi2b-hardware-backport-report.txt"
 
       - name: Configure strictly from bcm2709_defconfig
