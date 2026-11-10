@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Verify the Release boot assets before any kernel compilation is allowed to start.
 set -Eeuo pipefail
 
 if [[ $# -ne 4 ]]; then
