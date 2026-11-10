@@ -27,7 +27,22 @@ jobs:
         run: |
           set -Eeuo pipefail
           sudo apt-get update
-          sudo apt-get install -y shellcheck cpio curl device-tree-compiler gzip u-boot-tools
+          sudo apt-get install -y shellcheck cpio curl device-tree-compiler gzip u-boot-tools python3-yaml
+
+      - name: Validate workflow YAML syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import yaml
+          for path in (
+              ".github/workflows/build_h3_v2.yml",
+              ".github/workflows/validate-h3-v2.yml",
+          ):
+              with open(path, encoding="utf-8") as stream:
+                  yaml.safe_load(stream)
+              print(f"YAML syntax OK: {path}")
+          PY
 
       - name: Verify required H3 V2 files
         shell: bash
