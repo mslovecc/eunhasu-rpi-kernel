@@ -1,11 +1,6 @@
 name: Build RPi2B Fedora 36 kernel V9 (bcm2709 + Fedora 6.2.15 + Diretta)
 
 "on":
-  push:
-    branches:
-      - v9-rpi2b-bcm2709-fedora36-diretta
-    paths:
-      - config/v9-rpi2b-diretta.fragment
   workflow_dispatch:
     inputs:
       jobs:
