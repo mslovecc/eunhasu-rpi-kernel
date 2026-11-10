@@ -27,7 +27,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           sudo apt-get update
-          sudo apt-get install -y shellcheck cpio curl device-tree-compiler gzip u-boot-tools python3-yaml
+          sudo apt-get install -y bc bison build-essential cpio curl device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf gzip libelf-dev libssl-dev make patch shellcheck u-boot-tools python3-yaml xz-utils
 
       - name: Validate workflow YAML syntax
         shell: bash
@@ -117,6 +117,36 @@ jobs:
           test -f "$ROOT_CHECK/scripts/functions"
           test -L "$ROOT_CHECK/lib"
           test "$(readlink "$ROOT_CHECK/lib")" = "usr/lib"
+
+      - name: Verify Release DTB matches Linux 6.2.15 source
+        shell: bash
+        env:
+          SOURCE_URL: https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15/linux-6.2.15.tar.xz
+          SOURCE_SHA256: bc2d24c3a8bba92f92f3b480381fe7c80bb85d694fda656a1e030f55b926c766
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/dtb-source
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output .work/linux-6.2.15.tar.xz "$SOURCE_URL"
+          echo "$SOURCE_SHA256  .work/linux-6.2.15.tar.xz" | sha256sum --check
+          tar -xJf .work/linux-6.2.15.tar.xz -C .work/dtb-source
+          SRC="$GITHUB_WORKSPACE/.work/dtb-source/linux-6.2.15"
+          test -s "$SRC/Makefile"
+          patch --directory="$SRC" --strip=1 --forward \
+            < sources/kernel-srpm/patch-6.2-redhat.patch
+          install -m 0644 sources/kernel-srpm/Makefile.rhelver "$SRC/Makefile.rhelver"
+          bash scripts/prepare-h3-v2-config.sh "$SRC" "6.2.15-215.fc36.armv7hl"
+          make -C "$SRC" -j2 ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+            arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb
+          BUILT_DTB="$SRC/arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb"
+          RELEASE_DTB=".work/original-boot/original-sun8i-h3-orangepi-pc.dtb"
+          cmp "$BUILT_DTB" "$RELEASE_DTB" || {
+            echo "::error::Release DTB does not match the DTB built from Linux 6.2.15 source."
+            echo "Source DTB:  $(sha256sum "$BUILT_DTB" | awk '{print $1}')"
+            echo "Release DTB: $(sha256sum "$RELEASE_DTB" | awk '{print $1}')"
+            exit 1
+          }
+          echo "Release DTB is byte-identical to the Linux 6.2.15 source-built DTB."
 
       - name: Test initramfs archive path matching
         shell: bash
