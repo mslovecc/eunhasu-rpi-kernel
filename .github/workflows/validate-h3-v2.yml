@@ -85,7 +85,7 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          printf '%s\\n' init ./init | grep -Eq '^(\./)?init$'
-          printf '%s\\n' usr/lib/modules/6.2.15-215.fc36.armv7hl/modules.dep \
+          printf '%s\n' init ./init | grep -Eq '^(\./)?init$'
+          printf '%s\n' usr/lib/modules/6.2.15-215.fc36.armv7hl/modules.dep \
             ./usr/lib/modules/6.2.15-215.fc36.armv7hl/modules.dep \
             | grep -Eq '^(\./)?usr/lib/modules/6.2.15-215.fc36.armv7hl/'
