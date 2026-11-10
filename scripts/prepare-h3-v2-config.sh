@@ -73,7 +73,12 @@ bash scripts/config --file .config \
   --enable SOUND \
   --enable SND \
   --enable SND_PCM \
-  --enable SND_TIMER
+  --enable SND_TIMER \
+  --disable DEBUG_INFO \
+  --disable DEBUG_INFO_DWARF5 \
+  --disable DEBUG_INFO_BTF \
+  --disable DEBUG_INFO_BTF_MODULES \
+  --disable DEBUG_INFO_COMPRESSED_NONE
 
 make ARCH=arm olddefconfig
 make ARCH=arm syncconfig
@@ -106,7 +111,7 @@ for item in \
   }
 done
 
-for sym in CONFIG_MODVERSIONS CONFIG_THUMB2_KERNEL CONFIG_MODULE_SIG_FORCE; do
+for sym in CONFIG_MODVERSIONS CONFIG_THUMB2_KERNEL CONFIG_MODULE_SIG_FORCE CONFIG_DEBUG_INFO CONFIG_DEBUG_INFO_DWARF5 CONFIG_DEBUG_INFO_BTF CONFIG_DEBUG_INFO_BTF_MODULES CONFIG_DEBUG_INFO_COMPRESSED_NONE; do
   if grep -qx "$sym=y" .config; then
     echo "::error::$sym must not be enabled."
     exit 1
@@ -125,6 +130,9 @@ REPORT="$ROOT/h3-v2-config-report.txt"
   echo
   echo "[ABI-related final settings]"
   grep -E '^(CONFIG_(ARCH_SUNXI|MACH_SUN8I|CPU_V7|AEABI|ARM_PATCH_PHYS_VIRT|SMP|PREEMPT|MODULES|MODULE_UNLOAD|MODVERSIONS|THUMB2_KERNEL|MODULE_SIG|MODULE_SIG_FORCE|SND|SND_PCM|SND_TIMER))=' .config || true
+  echo
+  echo "[Debug/BTF size controls]"
+  grep -E "^(CONFIG_DEBUG_INFO|CONFIG_DEBUG_INFO_NONE|CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|CONFIG_DEBUG_INFO_BTF_MODULES|CONFIG_DEBUG_INFO_COMPRESSED_NONE)=" .config || true
   echo
   echo "[Advisory H3 hardware settings]"
   for sym in CONFIG_STMMAC_ETH CONFIG_DWMAC_SUN8I CONFIG_MMC CONFIG_MMC_SUNXI \

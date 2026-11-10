@@ -1,0 +1,167 @@
+name: Validate Orange Pi PC H3 V2 scripts
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/build_h3_v2.yml"
+      - ".github/workflows/validate-h3-v2.yml"
+      - "scripts/**"
+      - "config/config-6.18.35-current-sunxi"
+      - "modules/diretta/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Bash syntax and static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install static validation tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential cpio curl device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf gzip libelf-dev libssl-dev make patch shellcheck u-boot-tools python3-yaml xz-utils
+
+      - name: Validate workflow YAML syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import yaml
+          for path in (
+              ".github/workflows/build_h3_v2.yml",
+              ".github/workflows/validate-h3-v2.yml",
+          ):
+              with open(path, encoding="utf-8") as stream:
+                  yaml.safe_load(stream)
+              print(f"YAML syntax OK: {path}")
+          PY
+
+      - name: Verify required H3 V2 files
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for f in \
+            .github/workflows/build_h3_v2.yml \
+            scripts/download-h3-v2-sources.sh \
+            scripts/prepare-h3-v2-config.sh \
+            scripts/audit-diretta-h3-v2.sh \
+            scripts/package-h3.sh \
+            scripts/download-h3-v2-boot-assets.sh \
+            scripts/build-h3-v2-uinitrd.sh \
+            config/config-6.18.35-current-sunxi \
+            modules/diretta/SHA256SUMS \
+            modules/diretta/alsa_bridge.ko \
+            modules/diretta/diretta_direct.ko; do
+            test -s "$f" || {
+              echo "::error::Missing or empty required file: $f"
+              exit 1
+            }
+          done
+
+      - name: Normalize script permissions and check Bash syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          scripts=(
+            scripts/download-h3-v2-sources.sh
+            scripts/prepare-h3-v2-config.sh
+            scripts/audit-diretta-h3-v2.sh
+            scripts/package-h3.sh
+            scripts/download-h3-v2-boot-assets.sh
+            scripts/build-h3-v2-uinitrd.sh
+          )
+          chmod 0755 "${scripts[@]}"
+          for script in "${scripts[@]}"; do
+            test -x "$script"
+            bash -n "$script"
+          done
+
+      - name: ShellCheck production scripts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          shellcheck --severity=error \
+            scripts/download-h3-v2-sources.sh \
+            scripts/prepare-h3-v2-config.sh \
+            scripts/audit-diretta-h3-v2.sh \
+            scripts/package-h3.sh \
+            scripts/download-h3-v2-boot-assets.sh \
+            scripts/build-h3-v2-uinitrd.sh
+
+      - name: Inspect Release uInitrd and DTB without compiling the kernel
+        shell: bash
+        env:
+          ORIGINAL_UINITRD_URL: https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15/uInitrd
+          ORIGINAL_UINITRD_SHA256: 7273d8d0868402c31f2aa380304c5d67bd6183028d193624a72dbea46b1cddbe
+          ORIGINAL_DTB_URL: https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15/sun8i-h3-orangepi-pc.dtb
+          ORIGINAL_DTB_SHA256: fd66f85a2543fe133fa2b884c834c88154b82700368c8e92616b78d3105fa9c2
+        run: |
+          set -Eeuo pipefail
+          bash scripts/download-h3-v2-boot-assets.sh \
+            "$ORIGINAL_UINITRD_URL" "$ORIGINAL_UINITRD_SHA256" \
+            "$ORIGINAL_DTB_URL" "$ORIGINAL_DTB_SHA256"
+          ROOT_CHECK="$GITHUB_WORKSPACE/.work/preflight-initramfs"
+          mkdir -p "$ROOT_CHECK"
+          gzip -dc .work/original-boot/original-uInitrd.payload.gz \
+            | (cd "$ROOT_CHECK" && cpio -idm --quiet --no-absolute-filenames)
+          test -f "$ROOT_CHECK/init"
+          test -f "$ROOT_CHECK/scripts/local"
+          test -f "$ROOT_CHECK/scripts/functions"
+          test -L "$ROOT_CHECK/lib"
+          test "$(readlink "$ROOT_CHECK/lib")" = "usr/lib"
+
+      - name: Compare Release DTB with Linux 6.2.15 source-built DTB
+        shell: bash
+        env:
+          SOURCE_URL: https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15/linux-6.2.15.tar.xz
+          SOURCE_SHA256: bc2d24c3a8bba92f92f3b480381fe7c80bb85d694fda656a1e030f55b926c766
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/dtb-source
+          curl --fail --location --retry 3 --retry-all-errors \
+            --output .work/linux-6.2.15.tar.xz "$SOURCE_URL"
+          echo "$SOURCE_SHA256  .work/linux-6.2.15.tar.xz" | sha256sum --check
+          tar -xJf .work/linux-6.2.15.tar.xz -C .work/dtb-source
+          SRC="$GITHUB_WORKSPACE/.work/dtb-source/linux-6.2.15"
+          test -s "$SRC/Makefile"
+          patch --directory="$SRC" --strip=1 --forward \
+            < sources/kernel-srpm/patch-6.2-redhat.patch
+          install -m 0644 sources/kernel-srpm/Makefile.rhelver "$SRC/Makefile.rhelver"
+          bash scripts/prepare-h3-v2-config.sh "$SRC" "6.2.15-215.fc36.armv7hl"
+          make -C "$SRC" -j2 ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
+            sun8i-h3-orangepi-pc.dtb
+          BUILT_DTB="$SRC/arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb"
+          RELEASE_DTB=".work/original-boot/original-sun8i-h3-orangepi-pc.dtb"
+          mkdir -p .work/dtb-compare
+          "$SRC/scripts/dtc/dtc" -I dtb -O dts -s -o .work/dtb-compare/source.dts "$BUILT_DTB"
+          "$SRC/scripts/dtc/dtc" -I dtb -O dts -s -o .work/dtb-compare/release.dts "$RELEASE_DTB"
+          if cmp -s .work/dtb-compare/source.dts .work/dtb-compare/release.dts; then
+            echo "Release DTB normalized contents: identical to source-built DTB"
+          else
+            echo "::warning::Release DTB differs from the Linux 6.2.15 source-built DTB; it will be retained as a reference only."
+            echo "::group::Normalized DTS differences (first 220 lines)"
+            diff -u .work/dtb-compare/source.dts .work/dtb-compare/release.dts | sed -n '1,220p' || true
+            echo "::endgroup::"
+          fi
+          echo "Source DTB SHA256:  $(sha256sum "$BUILT_DTB" | awk '{print $1}')"
+          echo "Release DTB SHA256: $(sha256sum "$RELEASE_DTB" | awk '{print $1}')"
+          echo "Source DTS SHA256:  $(sha256sum .work/dtb-compare/source.dts | awk '{print $1}')"
+          echo "Release DTS SHA256: $(sha256sum .work/dtb-compare/release.dts | awk '{print $1}')"
+          echo "Active package DTB will be the source-built DTB."
+
+      - name: Test initramfs archive path matching
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          printf '%s\n' init ./init | grep -Eq '^(\./)?init$'
+          printf '%s\n' usr/lib/modules/6.2.15-215.fc36.armv7hl/modules.dep \
+            ./usr/lib/modules/6.2.15-215.fc36.armv7hl/modules.dep \
+            | grep -Eq '^(\./)?usr/lib/modules/6.2.15-215.fc36.armv7hl/'
