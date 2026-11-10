@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-if [[ $# -lt 2 ]]; then
+if [[ $# -ne 2 ]]; then
   echo "Usage: audit-diretta-h3-v2.sh <kernel-source-dir> <package-root>" >&2
   exit 2
 fi
@@ -24,13 +24,12 @@ fail() {
 [[ "$KERNEL_RELEASE" == "6.2.15-215.fc36.armv7hl" ]] || fail "Unexpected kernelrelease: $KERNEL_RELEASE"
 
 SAMPLE_KO="$(find "$SRC" -type f -name '*.ko' -print -quit)"
-[[ -n "$SAMPLE_KO" ]] || fail "No built kernel module found."
+[[ -n "$SAMPLE_KO" ]] || fail "No built kernel module found"
 BUILT_VERMAGIC="$(modinfo -F vermagic "$SAMPLE_KO" | xargs)"
-[[ "$BUILT_VERMAGIC" == "$EXPECTED_VERMAGIC" ]] || \
-  fail "Built module vermagic mismatch: $BUILT_VERMAGIC"
+[[ "$BUILT_VERMAGIC" == "$EXPECTED_VERMAGIC" ]] || fail "Built module vermagic mismatch: $BUILT_VERMAGIC"
 
 MODULE_DIR="$PKG/lib/modules/$KERNEL_RELEASE/extra/diretta"
-mkdir -p "$MODULE_DIR"
+[[ -d "$MODULE_DIR" ]] || fail "Packaged Diretta module directory is missing"
 
 {
   echo "Orange Pi PC / Allwinner H3 / Diretta static compatibility report"
@@ -67,17 +66,12 @@ for name in alsa_bridge.ko diretta_direct.ko; do
   } | tee -a "$REPORT"
 done
 
-# Module.symvers format: CRC, symbol, provider, export type, namespace.
-# These three expected exports are checked explicitly, but remain advisory:
-# a missing export is reported rather than aborting compilation/packaging.
 {
   echo "[Required kernel exports: CRC 0x00000000 / EXPORT_SYMBOL]"
 } >> "$REPORT"
 
 for sym in __check_object_size fortify_panic page_address; do
-  if awk -v s="$sym" \
-    '$2 == s && $1 == "0x00000000" && $4 == "EXPORT_SYMBOL" {found=1} END {exit !found}' \
-    "$SRC/Module.symvers"; then
+  if awk -v s="$sym" '$2 == s && $1 == "0x00000000" && $4 == "EXPORT_SYMBOL" {found=1} END {exit !found}' "$SRC/Module.symvers"; then
     awk -v s="$sym" '$2 == s {print}' "$SRC/Module.symvers" >> "$REPORT"
     echo "OK: $sym"
   else
@@ -92,8 +86,6 @@ ALL_EXPORTS="$WORK/all-exports.txt"
 awk 'NF >= 2 {print $2}' "$SRC/Module.symvers" | LC_ALL=C sort -u > "$KERNEL_EXPORTS"
 : > "$PEER_EXPORTS"
 
-# Collect symbols exported by either supplied module so that cross-module
-# references are not incorrectly reported as missing kernel exports.
 for module in "$ROOT/modules/diretta/alsa_bridge.ko" "$ROOT/modules/diretta/diretta_direct.ko"; do
   arm-linux-gnueabihf-nm -g --defined-only "$module" 2>/dev/null \
     | awk 'NF && $NF ~ /^__ksymtab(_gpl)?_/ {
@@ -138,40 +130,30 @@ done
   echo "- Final acceptance requires loading both modules on Orange Pi PC and testing Diretta."
 } >> "$REPORT"
 
-# Verify the final boot triplet and rebuilt initramfs module release.
 [[ -s "$PKG/boot/zImage" ]] || fail "Packaged zImage is missing"
 [[ -s "$PKG/boot/uInitrd" ]] || fail "Packaged uInitrd is missing"
-[[ -s "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb" ]] || fail "Packaged original DTB is missing"
+[[ -s "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb" ]] || fail "Packaged Orange Pi PC DTB is missing"
 command -v dumpimage >/dev/null || fail "dumpimage is unavailable"
+
+MODEL="$(fdtget -t s "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb" / model)"
+COMPAT="$(fdtget -t s "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb" / compatible)"
+[[ "$MODEL" == "Xunlong Orange Pi PC" && "$COMPAT" == *"xunlong,orangepi-pc"* ]] || fail "Packaged DTB identity mismatch: $MODEL / $COMPAT"
+
 dumpimage -l "$PKG/boot/uInitrd" > "$WORK/uinitrd-header.txt"
 grep -q 'Image Type:.*RAMDisk Image' "$WORK/uinitrd-header.txt" || fail "uInitrd is not a U-Boot RAMDisk image"
 grep -q 'Architecture:.*ARM' "$WORK/uinitrd-header.txt" || fail "uInitrd architecture is not ARM"
 dumpimage -p 0 -o "$WORK/uinitrd-payload.gz" "$PKG/boot/uInitrd"
 gzip -t "$WORK/uinitrd-payload.gz" || fail "uInitrd gzip payload is corrupt"
 gzip -dc "$WORK/uinitrd-payload.gz" | cpio -it --quiet > "$WORK/uinitrd-files.txt"
-grep -Eq '^(\\./)?init || fail "uInitrd /init is missing"
+grep -Eq '^(\\./)?init$' "$WORK/uinitrd-files.txt" || fail "uInitrd /init is missing"
 grep -Eq "^(\\./)?usr/lib/modules/$KERNEL_RELEASE/" "$WORK/uinitrd-files.txt" || fail "uInitrd module directory does not match $KERNEL_RELEASE"
+
 {
   echo "[Boot image audit]"
   echo "zImage bytes: $(stat -c '%s' "$PKG/boot/zImage")"
   echo "uInitrd bytes: $(stat -c '%s' "$PKG/boot/uInitrd")"
-  echo "DTB SHA256: $(sha256sum "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb" | awk '{print $1}')"
-  echo "uInitrd header: valid ARM U-Boot RAMDisk"
-  echo "uInitrd module release: $KERNEL_RELEASE"
-  echo
-} | tee -a "$REPORT"
-
-if [[ "$MISSING_TOTAL" -gt 0 ]]; then
-  echo "::warning::Some Diretta imports are unresolved in static audit; continuing to package."
-fi
-
-cat "$REPORT"
- "$WORK/uinitrd-files.txt" || fail "uInitrd /init is missing"
-grep -q "^usr/lib/modules/$KERNEL_RELEASE/" "$WORK/uinitrd-files.txt" || fail "uInitrd module directory does not match $KERNEL_RELEASE"
-{
-  echo "[Boot image audit]"
-  echo "zImage bytes: $(stat -c '%s' "$PKG/boot/zImage")"
-  echo "uInitrd bytes: $(stat -c '%s' "$PKG/boot/uInitrd")"
+  echo "DTB model: $MODEL"
+  echo "DTB compatible: $COMPAT"
   echo "DTB SHA256: $(sha256sum "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb" | awk '{print $1}')"
   echo "uInitrd header: valid ARM U-Boot RAMDisk"
   echo "uInitrd module release: $KERNEL_RELEASE"
