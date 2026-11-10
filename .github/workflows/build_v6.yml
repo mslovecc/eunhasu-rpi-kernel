@@ -8,11 +8,6 @@ name: Build Raspberry Pi 2B Kernel from bcm2709_defconfig (V6 - Diretta)
         required: false
         default: "0"
         type: string
-      verify_diretta_symbols:
-        description: "Report missing Diretta symbol exports/imports as warnings only"
-        required: false
-        default: true
-        type: boolean
 
 permissions:
   contents: read
@@ -259,89 +254,11 @@ jobs:
           } | tee rpi2b-v6-module-audit.txt
           echo "::notice::Module inventory is advisory; optional/non-Pi drivers do not fail the build."
 
-      - name: Verify Diretta vermagic and audit exports/imports (non-blocking symbol audit)
+      - name: Strict Diretta ABI audit (all failures block packaging)
         shell: bash
-        env:
-          VERIFY_SYMBOLS: ${{ inputs.verify_diretta_symbols }}
         run: |
           set -Eeuo pipefail
-          SAMPLE_KO="$(find "$SRC" -type f -name '*.ko' -print -quit)"
-          test -n "$SAMPLE_KO"
-          BUILT_VERMAGIC="$(modinfo -F vermagic "$SAMPLE_KO" | xargs)"
-          echo "Expected: $EXPECTED_VERMAGIC"
-          echo "Built:    $BUILT_VERMAGIC"
-          [[ "$BUILT_VERMAGIC" == "$EXPECTED_VERMAGIC" ]] || {
-            echo "::error::Built module vermagic does not match the supplied Diretta modules."
-            exit 1
-          }
-
-          # These three symbols are explicit ABI requirements of the supplied
-          # Diretta modules. They are not optional audit findings.
-          for sym in __check_object_size fortify_panic page_address; do
-            if ! awk -v s="$sym" '$2==s && $1=="0x00000000" && $4=="EXPORT_SYMBOL" {found=1} END{exit !found}' "$SRC/Module.symvers"; then
-              echo "::error::Required Diretta kernel export missing or mismatched: $sym"
-              exit 1
-            fi
-          done
-
-          # Collect only symbols that the peer module marks as exported.
-          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
-            name="$(basename "$module")"
-            peer="modules/diretta/diretta_direct.ko"
-            [[ "$name" == "diretta_direct.ko" ]] && peer="modules/diretta/alsa_bridge.ko"
-            arm-linux-gnueabihf-nm -a "$peer" 2>/dev/null \
-              | awk '{
-                  s=$NF
-                  if (s ~ /^__ksymtab_/) { sub(/^__ksymtab_/, "", s); print s }
-                  else if (s ~ /^___ksymtab\\+/) { sub(/^___ksymtab\\+/, "", s); print s }
-                }' | sort -u > ".work/diretta/$name.peer-exports"
-          done
-
-          REPORT="$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
-          MISSING_TOTAL=0
-          {
-            echo "Diretta compatibility audit"
-            echo "Kernel release: $KERNEL_RELEASE"
-            echo "Expected vermagic: $EXPECTED_VERMAGIC"
-            echo "Built vermagic: $BUILT_VERMAGIC"
-            echo
-            echo "[Required A20 exports: CRC 0x00000000 / EXPORT_SYMBOL]"
-            for sym in __check_object_size fortify_panic page_address; do
-              if awk -v s="$sym" '$2==s && $1=="0x00000000" && $4=="EXPORT_SYMBOL" {print; found=1} END{exit !found}' "$SRC/Module.symvers"; then
-                :
-              else
-                echo "MISSING_OR_MISMATCHED: $sym"
-                echo "::warning::Required Diretta export missing or mismatched: $sym (build continues)"
-              fi
-            done
-            echo
-            echo "[Undefined imports per supplied module]"
-            for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
-              name="$(basename "$module")"
-              missing=".work/diretta/$name.missing"
-              : > "$missing"
-              while IFS= read -r sym; do
-                [[ -n "$sym" ]] || continue
-                if ! awk -v s="$sym" '$2==s {found=1} END{exit !found}' "$SRC/Module.symvers" \
-                    && ! grep -Fxq "$sym" ".work/diretta/$name.peer-exports"; then
-                  echo "$sym" >> "$missing"
-                fi
-              done < ".work/diretta/$name.undefined"
-              count="$(wc -l < "$missing")"
-              MISSING_TOTAL=$((MISSING_TOTAL + count))
-              echo "$name: undefined=$(wc -l < ".work/diretta/$name.undefined"), not in kernel or peer exports=$count"
-              echo "Peer module exported-symbol candidates: $(wc -l < ".work/diretta/$name.peer-exports")"
-              if [[ "$count" -gt 0 ]]; then sed 's/^/  MISSING: /' "$missing"; fi
-            done
-            echo
-            echo "Total imports not found in kernel Module.symvers: $MISSING_TOTAL"
-            echo "NOTE: The two supplied Diretta modules may reference each other; inspect module exports and runtime load order separately."
-            echo "NOTE: vermagic and symbol-name checks do not prove full binary ABI compatibility."
-          } > "$REPORT"
-          cat "$REPORT"
-          if [[ "$VERIFY_SYMBOLS" == "true" && "$MISSING_TOTAL" -gt 0 ]]; then
-            echo "::warning::Some Diretta imports are absent from kernel Module.symvers; see report. Continuing."
-          fi
+          bash scripts/verify-rpi2b-diretta-abi.sh "$SRC" "$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
 
       - name: Package kernel, modules, DTBs and original Diretta modules
         shell: bash
@@ -371,21 +288,10 @@ jobs:
           [[ "$(basename "$MODDIR")" == "$KERNEL_RELEASE" ]]
           test -s "$MODDIR/modules.dep"
 
-          # Build a generic initramfs from the ARM target module tree, not
-          # from the x86_64 GitHub runner's currently running kernel.
-          # --no-hostonly prevents host hardware from contaminating the image.
-          dracut --force --no-hostonly --no-hostonly-cmdline \
-            --kver "$KERNEL_RELEASE" \
-            --kmoddir "$MODDIR" \
-            --omit "ply plymouth" \
-            "$PKG/boot/initramfs7" "$KERNEL_RELEASE"
-          test -s "$PKG/boot/initramfs7"
-          file "$PKG/boot/initramfs7" | tee "$PKG/build-info/initramfs-info.txt"
-          lsinitrd "$PKG/boot/initramfs7" > "$PKG/build-info/initramfs-file-list.txt"
-          grep -q "lib/modules/$KERNEL_RELEASE" "$PKG/build-info/initramfs-file-list.txt" || {
-            echo "::error::Generated initramfs does not contain target kernel modules."
-            exit 1
-          }
+          # Deliberately do not generate or replace Eunhasu's complete initramfs.
+          # The original initramfs contains its own /init, scripts, BusyBox and
+          # userspace. Runtime boot-chain integration is a separate acceptance
+          # stage; this package supplies only the matching kernel/module tree.
 
           install -m 0644 "$SRC/.config" "$PKG/build-info/bcm2709-diretta-v6.config"
           install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
