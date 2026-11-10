@@ -67,13 +67,14 @@ jobs:
           for f in \
             "$V8_FRAGMENT" "$FEDORA_DEVEL_RPM" "$A20_DEVEL_TARBALL" \
             "$SUPPORT_DIR/kernel.spec" "$SUPPORT_DIR/patch-6.2-redhat.patch" \
-            "$SUPPORT_DIR/SHA256SUMS" \
+            "$SUPPORT_DIR/SHA256SUMS" modules/diretta/SHA256SUMS \
             modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko \
             rpi-boot/config.txt rpi-boot/cmdline.txt; do
             test -s "$f" || { echo "::error::Missing required input: $f"; exit 1; }
           done
           (cd "$SUPPORT_DIR" && sha256sum --check SHA256SUMS)
           echo "[Original Diretta module hashes]"
+          (cd modules/diretta && sha256sum --check SHA256SUMS)
           sha256sum modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko
           A="$(modinfo -F vermagic modules/diretta/alsa_bridge.ko | xargs)"
           B="$(modinfo -F vermagic modules/diretta/diretta_direct.ko | xargs)"
@@ -104,6 +105,14 @@ jobs:
             | sort | tee a20-kernel-devel-key-files.txt
           SYMVERS="$(find .work/a20-devel -type f -name Module.symvers -print -quit)"
           test -n "$SYMVERS"
+          install -m 0644 "$SYMVERS" a20-original-Module.symvers
+          A20_CONFIG="$(find .work/a20-devel -type f \\( -name running-kernel.config -o -name .config \\) -print -quit)"
+          A20_UTS="$(find .work/a20-devel -type f -name utsrelease.h -print -quit)"
+          A20_AUTOCONF="$(find .work/a20-devel -type f -name autoconf.h -print -quit)"
+          test -n "$A20_CONFIG" && test -n "$A20_UTS" && test -n "$A20_AUTOCONF"
+          install -m 0644 "$A20_CONFIG" a20-original-running-kernel.config
+          install -m 0644 "$A20_UTS" a20-original-utsrelease.h
+          install -m 0644 "$A20_AUTOCONF" a20-original-autoconf.h
           for sym in __check_object_size fortify_panic page_address; do
             awk -v s="$sym" '$2==s && $1=="0x00000000" && $4=="EXPORT_SYMBOL" {ok=1} END{exit !ok}' "$SYMVERS" || {
               echo "::error::Original A20 Module.symvers lacks expected export $sym"
@@ -400,6 +409,10 @@ jobs:
           install -m 0644 "$GITHUB_WORKSPACE/$V8_FRAGMENT" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/a20-kernel-devel-sha256.txt" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/a20-kernel-devel-key-files.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/a20-original-Module.symvers" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/a20-original-running-kernel.config" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/a20-original-utsrelease.h" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/a20-original-autoconf.h" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/fedora-devel-rpm-identification.txt" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/srpm-identification.txt" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/rpi2b-v8-config-report.txt" "$PKG/build-info/"
@@ -465,6 +478,10 @@ jobs:
             a20-kernel-devel-archive-list.txt
             a20-kernel-devel-extracted-files.txt
             a20-kernel-devel-key-files.txt
+            a20-original-Module.symvers
+            a20-original-running-kernel.config
+            a20-original-utsrelease.h
+            a20-original-autoconf.h
             srpm-identification.txt
             rpi2b-v8-config-report.txt
             rpi2b-v8-driver-audit.txt
