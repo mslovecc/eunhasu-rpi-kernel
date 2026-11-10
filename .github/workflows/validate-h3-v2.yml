@@ -27,7 +27,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           sudo apt-get update
-          sudo apt-get install -y shellcheck
+          sudo apt-get install -y shellcheck cpio curl device-tree-compiler gzip u-boot-tools
 
       - name: Verify required H3 V2 files
         shell: bash
@@ -80,6 +80,28 @@ jobs:
             scripts/package-h3.sh \
             scripts/download-h3-v2-boot-assets.sh \
             scripts/build-h3-v2-uinitrd.sh
+
+      - name: Inspect Release uInitrd and DTB without compiling the kernel
+        shell: bash
+        env:
+          ORIGINAL_UINITRD_URL: https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15/uInitrd
+          ORIGINAL_UINITRD_SHA256: 7273d8d0868402c31f2aa380304c5d67bd6183028d193624a72dbea46b1cddbe
+          ORIGINAL_DTB_URL: https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15/sun8i-h3-orangepi-pc.dtb
+          ORIGINAL_DTB_SHA256: fd66f85a2543fe133fa2b884c834c88154b82700368c8e92616b78d3105fa9c2
+        run: |
+          set -Eeuo pipefail
+          bash scripts/download-h3-v2-boot-assets.sh \
+            "$ORIGINAL_UINITRD_URL" "$ORIGINAL_UINITRD_SHA256" \
+            "$ORIGINAL_DTB_URL" "$ORIGINAL_DTB_SHA256"
+          ROOT_CHECK="$GITHUB_WORKSPACE/.work/preflight-initramfs"
+          mkdir -p "$ROOT_CHECK"
+          gzip -dc .work/original-boot/original-uInitrd.payload.gz \
+            | (cd "$ROOT_CHECK" && cpio -idm --quiet --no-absolute-filenames)
+          test -f "$ROOT_CHECK/init"
+          test -f "$ROOT_CHECK/scripts/local"
+          test -f "$ROOT_CHECK/scripts/functions"
+          test -L "$ROOT_CHECK/lib"
+          test "$(readlink "$ROOT_CHECK/lib")" = "usr/lib"
 
       - name: Test initramfs archive path matching
         shell: bash
