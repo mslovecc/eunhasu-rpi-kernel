@@ -1,6 +1,12 @@
 name: Build Raspberry Pi 2B Kernel V8 (Fedora hardware config + Eunhasu Diretta ABI)
 
 "on":
+  push:
+    branches:
+      - v8-rpi2-fedora-config-base
+    paths:
+      - .github/workflows/build_v8.yml
+      - config/v8-rpi2-diretta.fragment
   workflow_dispatch:
     inputs:
       jobs:
@@ -13,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: rpi2b-kernel-v8-\${{ github.ref }}
+  group: rpi2b-kernel-v8-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -211,7 +217,7 @@ jobs:
             CONFIG_MMC CONFIG_MMC_BLOCK CONFIG_MMC_BCM2835 \
             CONFIG_MMC_SDHCI CONFIG_MMC_SDHCI_PLTFM CONFIG_MMC_SDHCI_IPROC \
             CONFIG_EXT4_FS CONFIG_MSDOS_PARTITION CONFIG_DEVTMPFS CONFIG_DEVTMPFS_MOUNT; do
-            grep -qx "CONFIG_\${option#CONFIG_}=y" .config || {
+            grep -qx "CONFIG_${option#CONFIG_}=y" .config || {
               echo "::error::Root boot option is not built-in: $option"
               exit 1
             }
@@ -223,7 +229,7 @@ jobs:
             CONFIG_USB_DWC2 CONFIG_USB_DWC2_DUAL_ROLE CONFIG_USB_EHCI_HCD \
             CONFIG_USB_OHCI_HCD CONFIG_USB_NET_SMSC95XX CONFIG_USB_LAN78XX \
             CONFIG_USB_USBNET CONFIG_USB_STORAGE CONFIG_SND_USB_AUDIO; do
-            grep -qE "^(CONFIG_\${option#CONFIG_}=|# CONFIG_\${option#CONFIG_} is not set$)" .config || {
+            grep -qE "^(CONFIG_${option#CONFIG_}=|# CONFIG_${option#CONFIG_} is not set$)" .config || {
               echo "::error::Fedora hardware option disappeared from final config: $option"
               exit 1
             }
@@ -251,7 +257,7 @@ jobs:
       - name: Build kernel, modules and device trees
         shell: bash
         env:
-          BUILD_JOBS: \${{ inputs.jobs }}
+          BUILD_JOBS: ${{ inputs.jobs }}
         run: |
           set -Eeuo pipefail
           JOBS="$BUILD_JOBS"
@@ -438,12 +444,12 @@ jobs:
       - name: Upload V8 package and full audit evidence
         uses: actions/upload-artifact@v4
         with:
-          name: rpi2b-kernel-\${{ env.EXPECTED_KERNEL_RELEASE }}-v8
+          name: rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v8
           if-no-files-found: error
           retention-days: 30
           path: |
-            rpi2b-kernel-\${{ env.EXPECTED_KERNEL_RELEASE }}-v8.tar.gz
-            rpi2b-kernel-\${{ env.EXPECTED_KERNEL_RELEASE }}-v8.tar.gz.sha256
+            rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v8.tar.gz
+            rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v8.tar.gz.sha256
             output-rpi2b-v8.config
             fedora-6.2.15-100-final.config
             fedora-devel-rpm-identification.txt
