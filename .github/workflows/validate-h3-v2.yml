@@ -144,6 +144,9 @@ jobs:
           "$SRC/scripts/dtc/dtc" -I dtb -O dts -s -o .work/dtb-compare/source.dts "$BUILT_DTB"
           "$SRC/scripts/dtc/dtc" -I dtb -O dts -s -o .work/dtb-compare/release.dts "$RELEASE_DTB"
           cmp .work/dtb-compare/source.dts .work/dtb-compare/release.dts || {
+            echo "::group::Normalized DTS difference"
+            diff -u .work/dtb-compare/source.dts .work/dtb-compare/release.dts | sed -n '1,220p' || true
+            echo "::endgroup::"
             echo "::error::Release DTB contents differ from the DTB built from Linux 6.2.15 source."
             echo "Source DTB:   $(sha256sum "$BUILT_DTB" | awk '{print $1}')"
             echo "Release DTB:  $(sha256sum "$RELEASE_DTB" | awk '{print $1}')"
