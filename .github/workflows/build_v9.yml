@@ -30,6 +30,8 @@ jobs:
       SUPPORT_DIR: "sources/kernel-srpm"
       HARDWARE_CONFIG: "config/bcm2709_defconfig"
       ABI_FRAGMENT: "config/v9-rpi2b-diretta.fragment"
+      A20_DEVEL_TARBALL: "baseline/a20/kernel-devel/kernel-devel-6.2.15-215.fc36.armv7hl.tar.gz"
+      A20_DEVEL_SHA256: "d6eecd7e4b2db2cf98576357377225cb14b18674da32fca041c80882561e851b"
       EXPECTED_KERNEL_RELEASE: "6.2.15-215.fc36.armv7hl"
       EXPECTED_VERMAGIC: "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
 
@@ -59,7 +61,8 @@ jobs:
             "$SUPPORT_DIR/kernel.spec" "$SUPPORT_DIR/patch-6.2-redhat.patch" \
             "$SUPPORT_DIR/Makefile.rhelver" "$SUPPORT_DIR/SHA256SUMS" \
             modules/diretta/SHA256SUMS modules/diretta/alsa_bridge.ko \
-            modules/diretta/diretta_direct.ko rpi-boot/config.txt rpi-boot/cmdline.txt; do
+            modules/diretta/diretta_direct.ko rpi-boot/config.txt rpi-boot/cmdline.txt \\
+            "$A20_DEVEL_TARBALL"; do
             test -s "$f" || { echo "::error::Missing required input: $f"; exit 1; }
           done
           (cd "$SUPPORT_DIR" && sha256sum --check SHA256SUMS)
@@ -85,6 +88,25 @@ jobs:
               | awk '$1 == "U" {print $2}' | sort -u \
               > ".work/diretta/$(basename "$m").imports"
           done
+
+      - name: Verify the original 6.2.15-215 Diretta ABI reference
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/a20-devel
+          echo "$A20_DEVEL_SHA256  $A20_DEVEL_TARBALL" | sha256sum --check
+          tar -xzf "$A20_DEVEL_TARBALL" -C .work/a20-devel
+          original_symvers="$(find .work/a20-devel -type f -name Module.symvers -print -quit)"
+          test -s "$original_symvers"
+          install -m 0644 "$original_symvers" a20-original-Module.symvers
+          for sym in __check_object_size fortify_panic page_address; do
+            awk -v s="$sym" '$2 == s && $1 == "0x00000000" && $4 == "EXPORT_SYMBOL" {ok=1} END {exit !ok}' "$original_symvers" || {
+              echo "::error::Original 6.2.15-215 Module.symvers does not match required export: $sym"
+              grep -w "$sym" "$original_symvers" || true
+              exit 1
+            }
+          done
+          echo "Original 6.2.15-215 Module.symvers confirms all three zero-CRC EXPORT_SYMBOL entries."
 
       - name: Download and verify Fedora 6.2.15 SRPM and source tarball
         shell: bash
@@ -426,6 +448,7 @@ jobs:
 
           install -m 0644 "$SRC/.config" "$PKG/build-info/v9-final.config"
           install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 "$GITHUB_WORKSPACE/a20-original-Module.symvers" "$PKG/build-info/"
           install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
           install -m 0644 "$SRC/vmlinux" "$PKG/build-info/vmlinux"
           install -m 0644 "$GITHUB_WORKSPACE/$HARDWARE_CONFIG" "$PKG/build-info/"
@@ -497,6 +520,7 @@ jobs:
             diretta-v9-compatibility-report.txt
             fedora-source-provenance.txt
             srpm-identification.txt
+            a20-original-Module.symvers
             package/README.txt
             package/boot/**
             package/build-info/**
