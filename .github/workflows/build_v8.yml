@@ -222,6 +222,7 @@ jobs:
             }
           done
           grep -qx '# CONFIG_MODVERSIONS is not set' .config
+          grep -qx '# CONFIG_MODULE_SIG_FORCE is not set' .config
           grep -qx '# CONFIG_LOCALVERSION_AUTO is not set' .config
 
           # Pi 2 SD-root must work without an initramfs.
