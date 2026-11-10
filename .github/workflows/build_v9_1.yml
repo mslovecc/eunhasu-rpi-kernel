@@ -242,7 +242,8 @@ jobs:
           grep -q 'postcore_initcall(__bcm2835_clk_driver_init)' "$SRC/drivers/clk/bcm/clk-bcm2835.c"
 
           grep '^diff --git ' "$PATCH" > "$GITHUB_WORKSPACE/rpi2b-hardware-backport-file-list.txt" || true
-          sha256sum "$PATCH" "$SNAPSHOT" > "$GITHUB_WORKSPACE/rpi2b-hardware-backport.sha256"
+          sha256sum "$PATCH" > "$GITHUB_WORKSPACE/rpi2b-hardware-backport.patch.sha256"
+          sha256sum "$SNAPSHOT" > "$GITHUB_WORKSPACE/rpi2b-hardware-backport.tar.sha256"
           {
             echo "Fedora source base: Linux 6.2.15"
             echo "Raspberry Pi source commit: $RPI_BACKPORT_COMMIT"
@@ -479,6 +480,8 @@ jobs:
           install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
           install -m 0644 "$GITHUB_WORKSPACE/rpi2b-hardware-backport.patch" "$PKG/build-info/"
           install -m 0644 "$GITHUB_WORKSPACE/rpi2b-hardware-backport.patch.sha256" "$PKG/build-info/"
+          install -m 0644 "$GITHUB_WORKSPACE/rpi2b-hardware-backport.tar" "$PKG/build-info/"
+          install -m 0644 "$GITHUB_WORKSPACE/rpi2b-hardware-backport.tar.sha256" "$PKG/build-info/"
           install -m 0644 "$GITHUB_WORKSPACE/rpi2b-hardware-backport-report.txt" "$PKG/build-info/"
           install -m 0644 "$GITHUB_WORKSPACE/rpi2b-hardware-backport-file-list.txt" "$PKG/build-info/"
           install -m 0644 "$SRC/vmlinux" "$PKG/build-info/vmlinux"
