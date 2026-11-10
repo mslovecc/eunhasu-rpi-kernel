@@ -149,7 +149,24 @@ grep -q 'Architecture:.*ARM' "$WORK/uinitrd-header.txt" || fail "uInitrd archite
 dumpimage -p 0 -o "$WORK/uinitrd-payload.gz" "$PKG/boot/uInitrd"
 gzip -t "$WORK/uinitrd-payload.gz" || fail "uInitrd gzip payload is corrupt"
 gzip -dc "$WORK/uinitrd-payload.gz" | cpio -it --quiet > "$WORK/uinitrd-files.txt"
-grep -qx 'init' "$WORK/uinitrd-files.txt" || fail "uInitrd /init is missing"
+grep -Eq '^(\\./)?init || fail "uInitrd /init is missing"
+grep -q "^usr/lib/modules/$KERNEL_RELEASE/" "$WORK/uinitrd-files.txt" || fail "uInitrd module directory does not match $KERNEL_RELEASE"
+{
+  echo "[Boot image audit]"
+  echo "zImage bytes: $(stat -c '%s' "$PKG/boot/zImage")"
+  echo "uInitrd bytes: $(stat -c '%s' "$PKG/boot/uInitrd")"
+  echo "DTB SHA256: $(sha256sum "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb" | awk '{print $1}')"
+  echo "uInitrd header: valid ARM U-Boot RAMDisk"
+  echo "uInitrd module release: $KERNEL_RELEASE"
+  echo
+} | tee -a "$REPORT"
+
+if [[ "$MISSING_TOTAL" -gt 0 ]]; then
+  echo "::warning::Some Diretta imports are unresolved in static audit; continuing to package."
+fi
+
+cat "$REPORT"
+ "$WORK/uinitrd-files.txt" || fail "uInitrd /init is missing"
 grep -q "^usr/lib/modules/$KERNEL_RELEASE/" "$WORK/uinitrd-files.txt" || fail "uInitrd module directory does not match $KERNEL_RELEASE"
 {
   echo "[Boot image audit]"
