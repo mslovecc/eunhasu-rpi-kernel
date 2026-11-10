@@ -1,4 +1,4 @@
-name: Build Raspberry Pi 2B Kernel from bcm2709_defconfig (V6 - Diretta)
+name: Build Raspberry Pi 2B Kernel from bcm2709_defconfig (V6 revised - Diretta)
 
 "on":
   workflow_dispatch:
@@ -8,11 +8,6 @@ name: Build Raspberry Pi 2B Kernel from bcm2709_defconfig (V6 - Diretta)
         required: false
         default: "0"
         type: string
-      verify_diretta_symbols:
-        description: "Report missing Diretta symbol exports/imports as warnings only"
-        required: false
-        default: true
-        type: boolean
 
 permissions:
   contents: read
@@ -23,111 +18,90 @@ concurrency:
 
 jobs:
   build:
-    name: Linux 6.2.15 / Raspberry Pi 2B / bcm2709 / Diretta V6
     runs-on: ubuntu-24.04
     timeout-minutes: 240
-
     env:
       RELEASE_TAG: "6.2.15"
       SRPM_NAME: "kernel-6.2.15-100.fc36.src.rpm"
       SOURCE_TARBALL: "linux-6.2.15.tar.xz"
       SRPM_SHA256: "f2f2fef31c54111720782b7867bc727d4f67866864a0e54c9dab9c606737f570"
       SOURCE_SHA256: "bc2d24c3a8bba92f92f3b480381fe7c80bb85d694fda656a1e030f55b926c766"
-      SUPPORT_DIR: "sources/kernel-srpm"
-      DEFCONFIG: "config/bcm2709_defconfig"
-      DIRETTA_FRAGMENT: "config/diretta-rpi2.fragment"
-      EXPECTED_KERNEL_RELEASE: "6.2.15-215.fc36.armv7hl"
+      SUPPORT_DIR: sources/kernel-srpm
+      DEFCONFIG: config/bcm2709_defconfig
+      DIRETTA_FRAGMENT: config/diretta-rpi2.fragment
+      EXPECTED_KERNEL_RELEASE: 6.2.15-215.fc36.armv7hl
 
     steps:
-      - name: Checkout repository
+      - name: Checkout current V6 branch
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Retrieve original Eunhasu initramfs7 from main
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/original
+          git fetch --no-tags --depth=1 origin main
+          git show FETCH_HEAD:sources/eunhasu/initramfs7 > .work/original/initramfs7
+          test -s .work/original/initramfs7
+          sha256sum .work/original/initramfs7 | tee .work/original/initramfs7.sha256
+          file .work/original/initramfs7
 
       - name: Install build dependencies
         shell: bash
         run: |
           set -Eeuo pipefail
           sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential ca-certificates cpio curl \
-            device-tree-compiler dwarves dracut-core flex gcc-arm-linux-gnueabihf \
-            git kmod libelf-dev libssl-dev make patch python3 rpm rsync \
-            xz-utils binutils-arm-linux-gnueabihf
-          arm-linux-gnueabihf-gcc --version | sed -n '1p'
+          sudo apt-get install -y bc bison build-essential ca-certificates cpio curl \
+            device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf git kmod \
+            libelf-dev libssl-dev make patch python3 rpm rsync xz-utils \
+            binutils-arm-linux-gnueabihf
           echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
 
-      - name: Validate source inputs and original Diretta modules
+      - name: Validate source inputs and Diretta modules
         shell: bash
         run: |
           set -Eeuo pipefail
-          for f in \
-            "$DEFCONFIG" "$DIRETTA_FRAGMENT" \
-            "$SUPPORT_DIR/kernel.spec" \
-            "$SUPPORT_DIR/patch-6.2-redhat.patch" \
-            "$SUPPORT_DIR/SHA256SUMS" \
-            modules/diretta/alsa_bridge.ko \
+          for f in "$DEFCONFIG" "$DIRETTA_FRAGMENT" \
+            "$SUPPORT_DIR/kernel.spec" "$SUPPORT_DIR/patch-6.2-redhat.patch" \
+            "$SUPPORT_DIR/SHA256SUMS" modules/diretta/alsa_bridge.ko \
             modules/diretta/diretta_direct.ko; do
-            test -s "$f" || { echo "::error::Missing required input: $f"; exit 1; }
+            test -s "$f" || { echo "::error::Missing $f"; exit 1; }
           done
           (cd "$SUPPORT_DIR" && sha256sum --check SHA256SUMS)
-
-          ALSA_VERMAGIC="$(modinfo -F vermagic modules/diretta/alsa_bridge.ko | xargs)"
-          DIRECT_VERMAGIC="$(modinfo -F vermagic modules/diretta/diretta_direct.ko | xargs)"
-          echo "alsa_bridge.ko: $ALSA_VERMAGIC"
-          echo "diretta_direct.ko: $DIRECT_VERMAGIC"
-          [[ "$ALSA_VERMAGIC" == "$DIRECT_VERMAGIC" ]] || {
-            echo "::error::The two supplied Diretta modules have different vermagic."
-            exit 1
-          }
-          [[ "$ALSA_VERMAGIC" == "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8" ]] || {
-            echo "::error::Supplied Diretta vermagic differs from the explicitly requested ABI: $ALSA_VERMAGIC"
-            exit 1
-          }
-          echo "EXPECTED_VERMAGIC=$ALSA_VERMAGIC" >> "$GITHUB_ENV"
-          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
-            readelf -h "$module" | grep -q 'Class:.*ELF32'
-            readelf -h "$module" | grep -q 'Machine:.*ARM'
-          done
-          mkdir -p .work/diretta
-          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
-            name="$(basename "$module")"
-            arm-linux-gnueabihf-nm -u "$module" 2>/dev/null \
-              | awk '$1 == "U" {print $2}' | sort -u > ".work/diretta/$name.undefined"
+          A="$(modinfo -F vermagic modules/diretta/alsa_bridge.ko | xargs)"
+          B="$(modinfo -F vermagic modules/diretta/diretta_direct.ko | xargs)"
+          test "$A" = "$B"
+          test "$A" = "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
+          for m in modules/diretta/*.ko; do
+            readelf -h "$m" | grep -q 'Class:.*ELF32'
+            readelf -h "$m" | grep -q 'Machine:.*ARM'
           done
           sha256sum modules/diretta/*.ko
 
-      - name: Download repository Release source and Fedora SRPM
+      - name: Download and verify Linux source and Fedora SRPM
         shell: bash
         run: |
           set -Eeuo pipefail
           mkdir -p .work/downloads
-          PRIMARY_URL="https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/$RELEASE_TAG"
-          BACKUP_URL="https://s2.bravo123.top"
-
-          download_verified() {
-            local filename="$1" expected="$2" dest=".work/downloads/$1" url
-            rm -f "$dest"
-            for url in "$PRIMARY_URL/$filename" "$BACKUP_URL/$filename"; do
-              echo "Trying $url"
-              if curl -fL --connect-timeout 20 --max-time 1800 \
-                  --retry 2 --retry-all-errors "$url" -o "$dest"; then
-                if echo "$expected  $dest" | sha256sum --check --status; then
-                  echo "Verified $filename"
-                  return 0
-                fi
-                echo "::warning::Checksum mismatch from $url; trying fallback."
-              else
-                echo "::warning::Download failed from $url; trying fallback."
+          PRIMARY="https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/$RELEASE_TAG"
+          BACKUP="https://s2.bravo123.top"
+          get_verified() {
+            local f="$1" sum="$2" url
+            for url in "$PRIMARY/$f" "$BACKUP/$f"; do
+              rm -f ".work/downloads/$f"
+              if curl -fL --connect-timeout 20 --max-time 1800 --retry 2 --retry-all-errors \
+                "$url" -o ".work/downloads/$f" &&
+                echo "$sum  .work/downloads/$f" | sha256sum --check --status; then
+                return 0
               fi
-              rm -f "$dest"
+              echo "::warning::Download/checksum failed: $url"
             done
-            echo "::error::Could not download and verify $filename from either source."
-            return 1
+            echo "::error::Unable to obtain verified $f"; return 1
           }
-
-          download_verified "$SRPM_NAME" "$SRPM_SHA256"
-          download_verified "$SOURCE_TARBALL" "$SOURCE_SHA256"
+          get_verified "$SRPM_NAME" "$SRPM_SHA256"
+          get_verified "$SOURCE_TARBALL" "$SOURCE_SHA256"
           rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE}\n' ".work/downloads/$SRPM_NAME" \
             | tee .work/srpm-identification.txt
           grep -qx 'kernel 6.2.15-100.fc36' .work/srpm-identification.txt
@@ -143,9 +117,8 @@ jobs:
           test -n "$SPEC" && test -n "$PATCH"
           cmp "$SPEC" "$SUPPORT_DIR/kernel.spec"
           cmp "$PATCH" "$SUPPORT_DIR/patch-6.2-redhat.patch"
-          echo "Fedora SRPM spec and patch match repository support files."
 
-      - name: Extract Linux 6.2.15 and apply Fedora patch
+      - name: Extract source and apply Fedora patch
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -153,240 +126,97 @@ jobs:
           tar -xJf ".work/downloads/$SOURCE_TARBALL" -C .work/source
           SRC="$GITHUB_WORKSPACE/.work/source/linux-6.2.15"
           test -s "$SRC/Makefile"
-          [[ "$(make -s -C "$SRC" ARCH=arm kernelversion)" == "6.2.15" ]]
+          test "$(make -s -C "$SRC" ARCH=arm kernelversion)" = "6.2.15"
           patch --directory="$SRC" --strip=1 --forward < .work/srpm-payload/patch-6.2-redhat.patch
-          RHELVER_FILE="$(find .work/srpm-payload -type f -name Makefile.rhelver -print -quit)"
-          test -s "$RHELVER_FILE"
-          install -m 0644 "$RHELVER_FILE" "$SRC/Makefile.rhelver"
+          RHELVER="$(find .work/srpm-payload -name Makefile.rhelver -type f -print -quit)"
+          test -s "$RHELVER"
+          install -m 0644 "$RHELVER" "$SRC/Makefile.rhelver"
           echo "SRC=$SRC" >> "$GITHUB_ENV"
 
-      - name: Configure from repository bcm2709_defconfig plus Diretta overlay
+      - name: Configure kernel and enforce Diretta ABI settings
         shell: bash
         run: |
           set -Eeuo pipefail
-          test -s "$DEFCONFIG"
-          test -s "$DIRETTA_FRAGMENT"
           cd "$SRC"
-
-          # The checked-in bcm2709_defconfig is the only base .config.
           cp "$GITHUB_WORKSPACE/$DEFCONFIG" .config
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
-
-          # Apply only the small, explicit Diretta ABI overlay.
-          bash scripts/kconfig/merge_config.sh -m -r .config \
-            "$GITHUB_WORKSPACE/$DIRETTA_FRAGMENT"
+          bash scripts/kconfig/merge_config.sh -m -r .config "$GITHUB_WORKSPACE/$DIRETTA_FRAGMENT"
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
-
           cp .config "$GITHUB_WORKSPACE/output-rpi2b-v6.config"
-          {
-            echo "Base config: $DEFCONFIG"
-            echo "Overlay: $DIRETTA_FRAGMENT"
-            echo "Kernel source: Linux 6.2.15 from repository Release"
-            echo "SRPM: $SRPM_NAME"
-            echo
-            echo "[Required resolved config]"
-            grep -E '^(CONFIG_(LOCALVERSION|SMP|PREEMPT|MODULES|MODULE_UNLOAD|HIGHMEM|HARDENED_USERCOPY|FORTIFY_SOURCE)=|# CONFIG_(MODVERSIONS|MODULE_SIG|MODULE_SIG_FORCE|MODULE_SIG_ALL) is not set)' .config || true
-            echo
-            echo "[Requested overlay options not retained by Kconfig - advisory]"
-            python3 - "$GITHUB_WORKSPACE/$DIRETTA_FRAGMENT" .config <<'PY'
-          import re, sys
-          from pathlib import Path
-          wanted, actual = map(Path, sys.argv[1:])
-          def parse(path):
-              d={}
-              for raw in path.read_text(errors="replace").splitlines():
-                  s=raw.strip()
-                  m=re.fullmatch(r"CONFIG_([A-Z0-9_]+)=(.*)",s)
-                  if m: d[m.group(1)]=m.group(2); continue
-                  m=re.fullmatch(r"# CONFIG_([A-Z0-9_]+) is not set",s)
-                  if m: d[m.group(1)]="n"
-              return d
-          w,a=parse(wanted),parse(actual)
-          for k,v in sorted(w.items()):
-              if a.get(k,"<missing>") != v:
-                  print(f"CONFIG_{k}: requested {v}, resolved {a.get(k,'<missing>')}")
-          PY
-          } | tee "$GITHUB_WORKSPACE/rpi2b-v6-config-report.txt"
-
-          # Only these core ABI/config conditions are hard gates.
           grep -qx 'CONFIG_SMP=y' .config
           grep -qx 'CONFIG_PREEMPT=y' .config
           grep -qx 'CONFIG_MODULES=y' .config
           grep -qx 'CONFIG_MODULE_UNLOAD=y' .config
-          # alsa_bridge imports page_address(); ARM only provides the exported
-          # page-address implementation when HIGHMEM support is selected.
           grep -qx 'CONFIG_HIGHMEM=y' .config
+          grep -qx 'CONFIG_DEBUG_INFO=y' .config
+          grep -qx 'CONFIG_DEBUG_INFO_DWARF4=y' .config
+          grep -qx '# CONFIG_DEBUG_INFO_REDUCED is not set' .config
+          grep -qx '# CONFIG_DEBUG_INFO_SPLIT is not set' .config
           grep -qx '# CONFIG_MODVERSIONS is not set' .config
-          # MODULE_SIG_FORCE is not a guaranteed Kconfig symbol in this
-          # Raspberry Pi kernel tree. Do not make its textual presence a gate:
-          # CONFIG_MODULE_SIG=n (reported above) already means signing is not
-          # enabled, and absent optional symbols must not stop the build.
           grep -qx 'CONFIG_LOCALVERSION="-215.fc36.armv7hl"' .config
+          REL="$(make -s ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
+          test "$REL" = "$EXPECTED_KERNEL_RELEASE"
+          echo "KERNEL_RELEASE=$REL" >> "$GITHUB_ENV"
+          grep -E '^(CONFIG_(SMP|PREEMPT|MODULES|MODULE_UNLOAD|HIGHMEM|DEBUG_INFO|DEBUG_INFO_DWARF4|LOCALVERSION)=|# CONFIG_(MODVERSIONS|MODULE_SIG) is not set)' .config \
+            > "$GITHUB_WORKSPACE/rpi2b-v6-config-report.txt" || true
 
-          ACTUAL_RELEASE="$(make -s ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
-          echo "Resolved kernelrelease: $ACTUAL_RELEASE"
-          [[ "$ACTUAL_RELEASE" == "$EXPECTED_KERNEL_RELEASE" ]] || {
-            echo "::error::Kernel release mismatch: expected $EXPECTED_KERNEL_RELEASE, got $ACTUAL_RELEASE"
-            exit 1
-          }
-          echo "KERNEL_RELEASE=$ACTUAL_RELEASE" >> "$GITHUB_ENV"
-
-      - name: Build zImage, modules and device trees
+      - name: Build kernel, modules and DTBs
         shell: bash
         env:
           BUILD_JOBS: ${{ inputs.jobs }}
         run: |
           set -Eeuo pipefail
           JOBS="$BUILD_JOBS"
-          [[ -n "$JOBS" && "$JOBS" != "0" ]] || JOBS="$(nproc)"
-          [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Invalid jobs: $JOBS"; exit 1; }
+          [[ -n "$JOBS" && "$JOBS" != 0 ]] || JOBS="$(nproc)"
+          [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]
           make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" zImage modules dtbs
-
           test -s "$SRC/arch/arm/boot/zImage"
           test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
           test -s "$SRC/Module.symvers"
           test -s "$SRC/System.map"
           test -s "$SRC/vmlinux"
           readelf -h "$SRC/vmlinux" | grep -q 'Machine:.*ARM'
-
           find "$SRC" -type f -name '*.ko' | sed "s#^$SRC/##" | sort > rpi2b-v6-module-inventory.txt
-          {
-            echo "Built module files: $(wc -l < rpi2b-v6-module-inventory.txt)"
-            echo
-            echo "[Module directory counts - advisory]"
-            awk -F/ '{print $1 "/" $2 "/" $3}' rpi2b-v6-module-inventory.txt | sort | uniq -c | sort -nr | awk 'NR <= 80'
-          } | tee rpi2b-v6-module-audit.txt
-          echo "::notice::Module inventory is advisory; optional/non-Pi drivers do not fail the build."
+          echo "Built module files: $(wc -l < rpi2b-v6-module-inventory.txt)" > rpi2b-v6-module-audit.txt
 
-      - name: Verify Diretta vermagic and audit exports/imports (non-blocking symbol audit)
+      - name: Strict Diretta ABI audit
         shell: bash
-        env:
-          VERIFY_SYMBOLS: ${{ inputs.verify_diretta_symbols }}
         run: |
           set -Eeuo pipefail
-          SAMPLE_KO="$(find "$SRC" -type f -name '*.ko' -print -quit)"
-          test -n "$SAMPLE_KO"
-          BUILT_VERMAGIC="$(modinfo -F vermagic "$SAMPLE_KO" | xargs)"
-          echo "Expected: $EXPECTED_VERMAGIC"
-          echo "Built:    $BUILT_VERMAGIC"
-          [[ "$BUILT_VERMAGIC" == "$EXPECTED_VERMAGIC" ]] || {
-            echo "::error::Built module vermagic does not match the supplied Diretta modules."
-            exit 1
-          }
+          test -s scripts/verify-rpi2b-diretta-abi.sh
+          chmod 0755 scripts/verify-rpi2b-diretta-abi.sh
+          bash scripts/verify-rpi2b-diretta-abi.sh "$SRC" "$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
 
-          # These three symbols are explicit ABI requirements of the supplied
-          # Diretta modules. They are not optional audit findings.
-          for sym in __check_object_size fortify_panic page_address; do
-            if ! awk -v s="$sym" '$2==s && $1=="0x00000000" && $4=="EXPORT_SYMBOL" {found=1} END{exit !found}' "$SRC/Module.symvers"; then
-              echo "::error::Required Diretta kernel export missing or mismatched: $sym"
-              exit 1
-            fi
-          done
-
-          # Collect only symbols that the peer module marks as exported.
-          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
-            name="$(basename "$module")"
-            peer="modules/diretta/diretta_direct.ko"
-            [[ "$name" == "diretta_direct.ko" ]] && peer="modules/diretta/alsa_bridge.ko"
-            arm-linux-gnueabihf-nm -a "$peer" 2>/dev/null \
-              | awk '{
-                  s=$NF
-                  if (s ~ /^__ksymtab_/) { sub(/^__ksymtab_/, "", s); print s }
-                  else if (s ~ /^___ksymtab\\+/) { sub(/^___ksymtab\\+/, "", s); print s }
-                }' | sort -u > ".work/diretta/$name.peer-exports"
-          done
-
-          REPORT="$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
-          MISSING_TOTAL=0
-          {
-            echo "Diretta compatibility audit"
-            echo "Kernel release: $KERNEL_RELEASE"
-            echo "Expected vermagic: $EXPECTED_VERMAGIC"
-            echo "Built vermagic: $BUILT_VERMAGIC"
-            echo
-            echo "[Required A20 exports: CRC 0x00000000 / EXPORT_SYMBOL]"
-            for sym in __check_object_size fortify_panic page_address; do
-              if awk -v s="$sym" '$2==s && $1=="0x00000000" && $4=="EXPORT_SYMBOL" {print; found=1} END{exit !found}' "$SRC/Module.symvers"; then
-                :
-              else
-                echo "MISSING_OR_MISMATCHED: $sym"
-                echo "::warning::Required Diretta export missing or mismatched: $sym (build continues)"
-              fi
-            done
-            echo
-            echo "[Undefined imports per supplied module]"
-            for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
-              name="$(basename "$module")"
-              missing=".work/diretta/$name.missing"
-              : > "$missing"
-              while IFS= read -r sym; do
-                [[ -n "$sym" ]] || continue
-                if ! awk -v s="$sym" '$2==s {found=1} END{exit !found}' "$SRC/Module.symvers" \
-                    && ! grep -Fxq "$sym" ".work/diretta/$name.peer-exports"; then
-                  echo "$sym" >> "$missing"
-                fi
-              done < ".work/diretta/$name.undefined"
-              count="$(wc -l < "$missing")"
-              MISSING_TOTAL=$((MISSING_TOTAL + count))
-              echo "$name: undefined=$(wc -l < ".work/diretta/$name.undefined"), not in kernel or peer exports=$count"
-              echo "Peer module exported-symbol candidates: $(wc -l < ".work/diretta/$name.peer-exports")"
-              if [[ "$count" -gt 0 ]]; then sed 's/^/  MISSING: /' "$missing"; fi
-            done
-            echo
-            echo "Total imports not found in kernel Module.symvers: $MISSING_TOTAL"
-            echo "NOTE: The two supplied Diretta modules may reference each other; inspect module exports and runtime load order separately."
-            echo "NOTE: vermagic and symbol-name checks do not prove full binary ABI compatibility."
-          } > "$REPORT"
-          cat "$REPORT"
-          if [[ "$VERIFY_SYMBOLS" == "true" && "$MISSING_TOTAL" -gt 0 ]]; then
-            echo "::warning::Some Diretta imports are absent from kernel Module.symvers; see report. Continuing."
-          fi
-
-      - name: Package kernel, modules, DTBs and original Diretta modules
+      - name: Package kernel7, original initramfs7, DTBs and modules
         shell: bash
         run: |
           set -Eeuo pipefail
           PKG="$GITHUB_WORKSPACE/package"
           MODDIR="$PKG/lib/modules/$KERNEL_RELEASE"
-          mkdir -p "$PKG/boot/overlays" "$MODDIR/extra/diretta" "$PKG/build-info"
-
+          mkdir -p "$PKG/boot/overlays" "$PKG/dtb" "$MODDIR/extra/diretta" "$PKG/build-info"
           install -m 0644 "$SRC/arch/arm/boot/zImage" "$PKG/boot/kernel7.img"
-          for dtb in bcm2836-rpi-2-b.dtb bcm2837-rpi-3-b.dtb bcm2837-rpi-3-b-plus.dtb; do
-            if [[ -s "$SRC/arch/arm/boot/dts/$dtb" ]]; then
-              install -m 0644 "$SRC/arch/arm/boot/dts/$dtb" "$PKG/boot/$dtb"
-            fi
+          install -m 0644 .work/original/initramfs7 "$PKG/boot/initramfs7"
+          install -m 0644 "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb" "$PKG/dtb/"
+          for d in bcm2837-rpi-3-b.dtb bcm2837-rpi-3-b-plus.dtb; do
+            [[ ! -s "$SRC/arch/arm/boot/dts/$d" ]] || install -m 0644 "$SRC/arch/arm/boot/dts/$d" "$PKG/dtb/"
           done
-          if compgen -G "$SRC/arch/arm/boot/dts/overlays/*.dtbo" > /dev/null; then
+          if compgen -G "$SRC/arch/arm/boot/dts/overlays/*.dtbo" >/dev/null; then
             cp "$SRC"/arch/arm/boot/dts/overlays/*.dtbo "$PKG/boot/overlays/"
           fi
           [[ ! -f "$SRC/arch/arm/boot/dts/overlays/README" ]] || cp "$SRC/arch/arm/boot/dts/overlays/README" "$PKG/boot/overlays/"
-
-          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
-            INSTALL_MOD_PATH="$PKG" modules_install
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$PKG" modules_install
           install -m 0644 modules/diretta/alsa_bridge.ko "$MODDIR/extra/diretta/"
           install -m 0644 modules/diretta/diretta_direct.ko "$MODDIR/extra/diretta/"
           depmod -b "$PKG" "$KERNEL_RELEASE"
-          test -d "$MODDIR"
-          [[ "$(basename "$MODDIR")" == "$KERNEL_RELEASE" ]]
           test -s "$MODDIR/modules.dep"
-
-          # Build a generic initramfs from the ARM target module tree, not
-          # from the x86_64 GitHub runner's currently running kernel.
-          # --no-hostonly prevents host hardware from contaminating the image.
-          dracut --force --no-hostonly --no-hostonly-cmdline \
-            --kver "$KERNEL_RELEASE" \
-            --kmoddir "$MODDIR" \
-            --omit "ply plymouth" \
-            "$PKG/boot/initramfs7" "$KERNEL_RELEASE"
-          test -s "$PKG/boot/initramfs7"
-          file "$PKG/boot/initramfs7" | tee "$PKG/build-info/initramfs-info.txt"
-          lsinitrd "$PKG/boot/initramfs7" > "$PKG/build-info/initramfs-file-list.txt"
-          grep -q "lib/modules/$KERNEL_RELEASE" "$PKG/build-info/initramfs-file-list.txt" || {
-            echo "::error::Generated initramfs does not contain target kernel modules."
-            exit 1
-          }
-
+          cmp .work/original/initramfs7 "$PKG/boot/initramfs7"
+          sha256sum "$PKG/boot/initramfs7" > "$PKG/build-info/initramfs7.sha256"
+          printf '%s\n' \
+            "initramfs7 is copied byte-for-byte from main:sources/eunhasu/initramfs7." \
+            "Its embedded early-boot modules have NOT been rebuilt for $KERNEL_RELEASE." \
+            "Do not assume runtime compatibility until boot testing validates it." \
+            > "$PKG/build-info/INITRAMFS-NOTE.txt"
           install -m 0644 "$SRC/.config" "$PKG/build-info/bcm2709-diretta-v6.config"
           install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
           install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
@@ -397,53 +227,43 @@ jobs:
           cp "$GITHUB_WORKSPACE/rpi2b-v6-config-report.txt" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/rpi2b-v6-module-audit.txt" "$PKG/build-info/"
           cp "$GITHUB_WORKSPACE/rpi2b-v6-module-inventory.txt" "$PKG/build-info/"
-
           cat > "$PKG/README.txt" <<EOF
-          Raspberry Pi 2 Model B / Diretta kernel package (V6)
+          Raspberry Pi 2 Model B / Diretta V6 revised
           Kernel release: $KERNEL_RELEASE
-          Base config: config/bcm2709_defconfig
-          Overlay: config/diretta-rpi2.fragment
-          Source: Linux 6.2.15 repository Release asset
-          Fedora SRPM: $SRPM_NAME
-
           Boot image: boot/kernel7.img
-          Initramfs: boot/initramfs7 (generic initramfs built from target ARM modules)
-          Pi 2B DTB: boot/bcm2836-rpi-2-b.dtb
+          Initramfs: boot/initramfs7 (original Eunhasu image, unchanged)
+          DTBs: dtb/
+          Raspberry Pi 2B DTB: dtb/bcm2836-rpi-2-b.dtb
           Modules: lib/modules/$KERNEL_RELEASE/
-          Supplied Diretta modules:
-            extra/diretta/alsa_bridge.ko
-            extra/diretta/diretta_direct.ko
+          Diretta modules: extra/diretta/alsa_bridge.ko and diretta_direct.ko
 
-          The bcm2709_defconfig is the only base configuration. The Diretta
-          fragment overrides only kernel release, preemption, module ABI,
-          usercopy/fortify and signature enforcement settings.
-          Missing optional configuration symbols and missing Diretta exports
-          or imports are reported as advisory warnings and do not stop packaging.
-          Exact kernel release and supplied-module vermagic are hard requirements.
-          Matching vermagic and symbol names do not prove complete binary ABI
-          compatibility; validate both modules on the actual Raspberry Pi 2B.
+          WARNING: The original initramfs is preserved exactly. Its embedded
+          early-boot modules are from the original initramfs kernel release,
+          not $KERNEL_RELEASE. Runtime compatibility is not established by
+          this build. The new matching module tree is supplied separately.
+          Diretta ABI checks are static gates; actual module loading must be
+          validated on the target Raspberry Pi 2 Model B.
           EOF
-
-          depmod -b "$PKG" "$KERNEL_RELEASE"
           cd "$GITHUB_WORKSPACE"
-          tar -czf "rpi2b-kernel-$KERNEL_RELEASE-v6.tar.gz" package
-          sha256sum "rpi2b-kernel-$KERNEL_RELEASE-v6.tar.gz" > "rpi2b-kernel-$KERNEL_RELEASE-v6.tar.gz.sha256"
-          ls -lh "rpi2b-kernel-$KERNEL_RELEASE-v6.tar.gz" "rpi2b-kernel-$KERNEL_RELEASE-v6.tar.gz.sha256"
+          tar -czf "rpi2b-kernel-$KERNEL_RELEASE-v6-revised.tar.gz" package
+          sha256sum "rpi2b-kernel-$KERNEL_RELEASE-v6-revised.tar.gz" > "rpi2b-kernel-$KERNEL_RELEASE-v6-revised.tar.gz.sha256"
 
-      - name: Upload V6 build artifacts and audit reports
+      - name: Upload revised V6 artifact and reports
         uses: actions/upload-artifact@v4
         with:
-          name: rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6
+          name: rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6-revised
           if-no-files-found: error
           retention-days: 30
           path: |
-            rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6.tar.gz
-            rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6.tar.gz.sha256
+            rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6-revised.tar.gz
+            rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6-revised.tar.gz.sha256
             output-rpi2b-v6.config
             rpi2b-v6-config-report.txt
             rpi2b-v6-module-audit.txt
             rpi2b-v6-module-inventory.txt
             diretta-compatibility-report.txt
             package/README.txt
+            package/boot/kernel7.img
             package/boot/initramfs7
+            package/dtb/**
             package/build-info/**
