@@ -17,7 +17,7 @@ permissions:
 
 concurrency:
   group: rpi2b-fedora36-v9.1-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -175,7 +175,7 @@ jobs:
           set -Eeuo pipefail
           RPISRC="$GITHUB_WORKSPACE/.work/rpi-linux"
           PATCH="$GITHUB_WORKSPACE/rpi2b-hardware-backport.patch"
-          git clone --filter=blob:none --no-checkout "$RPI_LINUX_REPO" "$RPISRC"
+          git clone --filter=blob:none --no-checkout --depth=1 "$RPI_LINUX_REPO" "$RPISRC"
           git -C "$RPISRC" fetch --depth=1 origin "$RPI_BASE_COMMIT"
           git -C "$RPISRC" fetch --depth=1 origin "$RPI_BACKPORT_COMMIT"
           git -C "$RPISRC" cat-file -e "$RPI_BASE_COMMIT^{commit}"
