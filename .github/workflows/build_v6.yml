@@ -258,6 +258,9 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          test -s scripts/verify-rpi2b-diretta-abi.sh
+          chmod 0755 scripts/verify-rpi2b-diretta-abi.sh
+          test -x scripts/verify-rpi2b-diretta-abi.sh
           bash scripts/verify-rpi2b-diretta-abi.sh "$SRC" "$GITHUB_WORKSPACE/diretta-compatibility-report.txt"
 
       - name: Package kernel, modules, DTBs and original Diretta modules
@@ -313,7 +316,7 @@ jobs:
           Fedora SRPM: $SRPM_NAME
 
           Boot image: boot/kernel7.img
-          Initramfs: boot/initramfs7 (generic initramfs built from target ARM modules)
+          Initramfs: NOT INCLUDED. Preserve the original Eunhasu initramfs.
           Pi 2B DTB: boot/bcm2836-rpi-2-b.dtb
           Modules: lib/modules/$KERNEL_RELEASE/
           Supplied Diretta modules:
@@ -323,9 +326,10 @@ jobs:
           The bcm2709_defconfig is the only base configuration. The Diretta
           fragment overrides only kernel release, preemption, module ABI,
           usercopy/fortify and signature enforcement settings.
-          Missing optional configuration symbols and missing Diretta exports
-          or imports are reported as advisory warnings and do not stop packaging.
-          Exact kernel release and supplied-module vermagic are hard requirements.
+          All required Diretta kernel exports, all module imports, ARM ELF
+          attributes and struct module size checks are hard gates.
+          Any failed ABI gate stops packaging. The original Eunhasu initramfs
+          must be preserved; this package intentionally does not replace it.
           Matching vermagic and symbol names do not prove complete binary ABI
           compatibility; validate both modules on the actual Raspberry Pi 2B.
           EOF
@@ -351,5 +355,4 @@ jobs:
             rpi2b-v6-module-inventory.txt
             diretta-compatibility-report.txt
             package/README.txt
-            package/boot/initramfs7
             package/build-info/**
