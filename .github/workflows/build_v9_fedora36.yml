@@ -1,0 +1,433 @@
+name: Build RPi2B Fedora 36 kernel V9 (bcm2709 + Fedora 6.2.15 + Diretta)
+
+"on":
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Parallel jobs (0 = auto)"
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpi2b-fedora36-v9-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      RELEASE_TAG: "6.2.15"
+      SRPM_NAME: "kernel-6.2.15-100.fc36.src.rpm"
+      SOURCE_TARBALL: "linux-6.2.15.tar.xz"
+      SRPM_SHA256: "f2f2fef31c54111720782b7867bc727d4f67866864a0e54c9dab9c606737f570"
+      SOURCE_SHA256: "bc2d24c3a8bba92f92f3b480381fe7c80bb85d694fda656a1e030f55b926c766"
+      SUPPORT_DIR: "sources/kernel-srpm"
+      HARDWARE_CONFIG: "config/bcm2709_defconfig"
+      ABI_FRAGMENT: "config/v9-rpi2b-diretta.fragment"
+      A20_DEVEL_TARBALL: "baseline/a20/kernel-devel/kernel-devel-6.2.15-215.fc36.armv7hl.tar.gz"
+      A20_DEVEL_SHA256: "d6eecd7e4b2db2cf98576357377225cb14b18674da32fca041c80882561e851b"
+      KERNEL_RELEASE_EXPECTED: "6.2.15-215.fc36.armv7hl"
+      VERMAGIC_EXPECTED: "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ca-certificates cpio curl \
+            device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf git kmod \
+            libelf-dev libssl-dev make patch python3 rpm rsync xz-utils gzip \
+            binutils-arm-linux-gnueabihf
+          echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
+
+      - name: Validate inputs and original modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for f in "$HARDWARE_CONFIG" "$ABI_FRAGMENT" "$A20_DEVEL_TARBALL" \
+            "$SUPPORT_DIR/kernel.spec" "$SUPPORT_DIR/patch-6.2-redhat.patch" \
+            "$SUPPORT_DIR/Makefile.rhelver" "$SUPPORT_DIR/SHA256SUMS" \
+            modules/diretta/SHA256SUMS modules/diretta/alsa_bridge.ko \
+            modules/diretta/diretta_direct.ko rpi-boot/config.txt rpi-boot/cmdline.txt; do
+            test -s "$f" || { echo "::error::Missing input: $f"; exit 1; }
+          done
+          (cd "$SUPPORT_DIR" && sha256sum --check SHA256SUMS)
+          (cd modules/diretta && sha256sum --check SHA256SUMS)
+          for m in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            vm="$(modinfo -F vermagic "$m" | xargs)"
+            [[ "$vm" == "$VERMAGIC_EXPECTED" ]] || {
+              echo "::error::Original vermagic mismatch: $m ($vm)"
+              exit 1
+            }
+            readelf -h "$m" | grep -q 'Class:.*ELF32'
+            readelf -h "$m" | grep -q 'Machine:.*ARM'
+          done
+          mkdir -p .work/diretta
+          for m in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            arm-linux-gnueabihf-nm -u "$m" 2>/dev/null \
+              | awk '$1=="U" {print $2}' | sort -u \
+              > ".work/diretta/$(basename "$m").imports"
+          done
+
+      - name: Verify original 6.2.15-215 ABI reference
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "$A20_DEVEL_SHA256  $A20_DEVEL_TARBALL" | sha256sum --check
+          mkdir -p .work/a20-devel
+          tar -xzf "$A20_DEVEL_TARBALL" -C .work/a20-devel
+          original_symvers="$(find .work/a20-devel -type f -name Module.symvers -print -quit)"
+          test -s "$original_symvers"
+          install -m 0644 "$original_symvers" a20-original-Module.symvers
+
+          for sym in __check_object_size fortify_panic page_address; do
+            awk -v s="$sym" '$2==s && $1=="0x00000000" && $4=="EXPORT_SYMBOL" {ok=1} END{exit !ok}' "$original_symvers" || {
+              echo "::error::Original ABI export missing or changed: $sym"
+              grep -w "$sym" "$original_symvers" || true
+              exit 1
+            }
+          done
+
+          for name in alsa_bridge.ko diretta_direct.ko; do
+            while IFS= read -r symbol; do
+              [[ -n "$symbol" ]] || continue
+              awk -v s="$symbol" '$2==s {ok=1} END{exit !ok}' "$original_symvers" || {
+                echo "::error::Original Module.symvers lacks imported symbol $symbol from $name"
+                exit 1
+              }
+            done < ".work/diretta/$name.imports"
+          done
+
+      - name: Download and verify Fedora 6.2.15 SRPM and source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/downloads
+          primary="https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/$RELEASE_TAG"
+          backup="https://s2.bravo123.top"
+          download_verified() {
+            local name="$1" hash="$2" dest=".work/downloads/$1" url
+            rm -f "$dest"
+            for url in "$primary/$name" "$backup/$name"; do
+              if curl -fL --connect-timeout 20 --max-time 1800 --retry 2 \
+                  --retry-all-errors "$url" -o "$dest" \
+                  && echo "$hash  $dest" | sha256sum --check --status; then
+                return 0
+              fi
+              rm -f "$dest"
+            done
+            echo "::error::Unable to download verified input: $name"
+            return 1
+          }
+          download_verified "$SRPM_NAME" "$SRPM_SHA256"
+          download_verified "$SOURCE_TARBALL" "$SOURCE_SHA256"
+          rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE}\n' ".work/downloads/$SRPM_NAME" \
+            | tee srpm-identification.txt
+          grep -qx 'kernel 6.2.15-100.fc36' srpm-identification.txt
+          mkdir -p .work/srpm
+          (cd .work/srpm && rpm2cpio "../downloads/$SRPM_NAME" | cpio -idm --quiet)
+          spec="$(find .work/srpm -type f -name kernel.spec -print -quit)"
+          patchfile="$(find .work/srpm -type f -name patch-6.2-redhat.patch -print -quit)"
+          rhelver="$(find .work/srpm -type f -name Makefile.rhelver -print -quit)"
+          cmp "$spec" "$SUPPORT_DIR/kernel.spec"
+          cmp "$patchfile" "$SUPPORT_DIR/patch-6.2-redhat.patch"
+          cmp "$rhelver" "$SUPPORT_DIR/Makefile.rhelver"
+          {
+            echo "SRPM: $SRPM_NAME"
+            echo "SRPM SHA256: $SRPM_SHA256"
+            echo "Source tarball: $SOURCE_TARBALL"
+            echo "Source SHA256: $SOURCE_SHA256"
+            echo "SRPM spec, patch and Makefile.rhelver verified against repository."
+          } | tee fedora-source-provenance.txt
+
+      - name: Extract and patch Fedora Linux 6.2.15 source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p .work/source
+          tar -xJf ".work/downloads/$SOURCE_TARBALL" -C .work/source
+          SRC="$GITHUB_WORKSPACE/.work/source/linux-6.2.15"
+          test "$(make -s -C "$SRC" ARCH=arm kernelversion)" = "6.2.15"
+          patch --directory="$SRC" --strip=1 --forward < .work/srpm/patch-6.2-redhat.patch
+          install -m 0644 .work/srpm/Makefile.rhelver "$SRC/Makefile.rhelver"
+          echo "SRC=$SRC" >> "$GITHUB_ENV"
+
+      - name: Configure strictly from bcm2709_defconfig
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$SRC"
+          install -m 0644 "$GITHUB_WORKSPACE/$HARDWARE_CONFIG" .config
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          bash scripts/kconfig/merge_config.sh -m -r .config "$GITHUB_WORKSPACE/$ABI_FRAGMENT"
+
+          # Disable known non-RPi2 hardware and foreign-architecture helpers.
+          for opt in DRM_AMDGPU DRM_NOUVEAU DRM_RADEON DRM_I915 DRM_XE DRM_GMA500 \
+            DRM_VMWGFX DRM_VBOXVIDEO DRM_QXL DRM_BOCHS DRM_VIRTIO_GPU \
+            BLK_DEV_NVME NVME_CORE NVME_FC NVME_RDMA NVME_TCP NVME_TARGET \
+            SCSI_MPI3MR SCSI_QLA_FC SCSI_QLOGIC_1280 SCSI_HPSA MEGARAID_SAS \
+            MPT2SAS MPT3SAS SMARTPQI SCSI_ISCI XZ_DEC_X86 XZ_DEC_POWERPC \
+            XZ_DEC_IA64 XZ_DEC_SPARC; do
+            scripts/config --file .config --disable "$opt"
+          done
+          while IFS= read -r opt; do
+            [[ -n "$opt" ]] && scripts/config --file .config --disable "$opt"
+          done < <(awk -F= '/^CONFIG_(X86|INTEL|AMD|NVIDIA|DELL|HP|ACER|ASUS|LENOVO|THINKPAD|APPLE)_[A-Z0-9_]+=(y|m)$/ {
+            sub(/^CONFIG_/, "", $1); print $1
+          }' .config)
+
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
+          cp .config "$GITHUB_WORKSPACE/output-v9-rpi2b.config"
+          diff -u "$GITHUB_WORKSPACE/$HARDWARE_CONFIG" .config \
+            > "$GITHUB_WORKSPACE/v9-vs-bcm2709-defconfig.diff" || true
+
+          require() {
+            grep -Fqx "$1" .config || {
+              echo "::error::Required config missing: $1"
+              exit 1
+            }
+          }
+          for x in \
+            'CONFIG_LOCALVERSION="-215.fc36.armv7hl"' \
+            'CONFIG_ARCH_BCM2835=y' 'CONFIG_CPU_V7=y' 'CONFIG_AEABI=y' \
+            'CONFIG_ARM_PATCH_PHYS_VIRT=y' 'CONFIG_NEON=y' 'CONFIG_KERNEL_MODE_NEON=y' \
+            'CONFIG_SMP=y' 'CONFIG_PREEMPT=y' 'CONFIG_MODULES=y' 'CONFIG_MODULE_UNLOAD=y' \
+            'CONFIG_HIGHMEM=y' 'CONFIG_HARDENED_USERCOPY=y' 'CONFIG_FORTIFY_SOURCE=y' \
+            'CONFIG_BLK_DEV_INITRD=y' 'CONFIG_DEVTMPFS=y' 'CONFIG_DEVTMPFS_MOUNT=y' \
+            'CONFIG_MSDOS_PARTITION=y' 'CONFIG_EXT4_FS=y' 'CONFIG_MMC=y' \
+            'CONFIG_MMC_BLOCK=y' 'CONFIG_MMC_BCM2835=y' 'CONFIG_SERIAL_AMBA_PL011=y' \
+            'CONFIG_SERIAL_AMBA_PL011_CONSOLE=y' 'CONFIG_USB=y' 'CONFIG_SND=m' \
+            'CONFIG_SND_PCM=m' 'CONFIG_SND_TIMER=m' 'CONFIG_SND_USB_AUDIO=m' \
+            '# CONFIG_MODVERSIONS is not set' '# CONFIG_THUMB2_KERNEL is not set' \
+            '# CONFIG_PREEMPT_RT is not set' '# CONFIG_LOCALVERSION_AUTO is not set'; do
+            require "$x"
+          done
+
+          for opt in USB_DWC2 USB_NET_SMSC95XX USB_USBNET USB_STORAGE SND_USB_AUDIO; do
+            grep -Eq "^CONFIG_$opt=(m|y)$" .config || {
+              echo "::error::Required Pi 2 peripheral config missing: $opt"
+              exit 1
+            }
+          done
+
+          forbidden='DRM_AMDGPU|DRM_NOUVEAU|DRM_RADEON|DRM_I915|DRM_XE|DRM_GMA500|DRM_VMWGFX|DRM_VBOXVIDEO|DRM_QXL|DRM_BOCHS|DRM_VIRTIO_GPU|BLK_DEV_NVME|NVME_CORE|NVME_FC|NVME_RDMA|NVME_TCP|NVME_TARGET|SCSI_MPI3MR|SCSI_QLA_FC|SCSI_QLOGIC_1280|SCSI_HPSA|MEGARAID_SAS|MPT2SAS|MPT3SAS|SMARTPQI|SCSI_ISCI'
+          if grep -E "^CONFIG_($forbidden)=(y|m)$" .config; then
+            echo "::error::Forbidden non-RPi2 driver remains enabled."
+            exit 1
+          fi
+          if grep -Eq '^CONFIG_(X86|INTEL|AMD|NVIDIA|DELL|HP|ACER|ASUS|LENOVO|THINKPAD|APPLE)_[A-Z0-9_]+=(y|m)$' .config; then
+            echo "::error::Non-RPi2 vendor platform driver remains enabled."
+            exit 1
+          fi
+
+          release="$(make -s ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
+          [[ "$release" == "$KERNEL_RELEASE_EXPECTED" ]] || {
+            echo "::error::kernelrelease mismatch: $release"
+            exit 1
+          }
+          echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
+          {
+            echo "Hardware base: $HARDWARE_CONFIG"
+            echo "Fedora source: Linux 6.2.15 + Fedora SRPM patch"
+            echo "ABI fragment: $ABI_FRAGMENT"
+            echo "kernelrelease: $release"
+            grep -E '^(CONFIG_(LOCALVERSION|ARCH_BCM2835|CPU_V7|AEABI|ARM_PATCH_PHYS_VIRT|NEON|KERNEL_MODE_NEON|SMP|PREEMPT|MODULES|MODULE_UNLOAD|HIGHMEM|HARDENED_USERCOPY|FORTIFY_SOURCE|BLK_DEV_INITRD|DEVTMPFS|DEVTMPFS_MOUNT|MSDOS_PARTITION|EXT4_FS|MMC|MMC_BLOCK|MMC_BCM2835|USB_DWC2|USB_NET_SMSC95XX|USB_USBNET|USB_STORAGE|SND|SND_PCM|SND_TIMER|SND_USB_AUDIO)=|# CONFIG_(MODVERSIONS|THUMB2_KERNEL|PREEMPT_RT|LOCALVERSION_AUTO) is not set)' .config || true
+          } > "$GITHUB_WORKSPACE/v9-config-audit.txt"
+
+      - name: Build kernel, modules and Pi 2 DTB
+        shell: bash
+        env:
+          BUILD_JOBS: ${{ inputs.jobs }}
+        run: |
+          set -Eeuo pipefail
+          jobs="$BUILD_JOBS"
+          [[ -n "$jobs" && "$jobs" != "0" ]] || jobs="$(nproc)"
+          [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || exit 1
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            -j"$jobs" zImage modules dtbs
+          test -s "$SRC/arch/arm/boot/zImage"
+          test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
+          test -s "$SRC/Module.symvers" && test -s "$SRC/System.map"
+          readelf -h "$SRC/vmlinux" | grep -q 'Machine:.*ARM'
+          find "$SRC" -type f -name '*.ko' -print | sed "s#^$SRC/##" | sort \
+            > "$GITHUB_WORKSPACE/v9-module-inventory.txt"
+
+      - name: Enforce Diretta vermagic, exports and imports
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sample="$(find "$SRC" -type f -name '*.ko' -print -quit)"
+          test -n "$sample"
+          built_vm="$(modinfo -F vermagic "$sample" | xargs)"
+          [[ "$built_vm" == "$VERMAGIC_EXPECTED" ]] || {
+            echo "::error::Built vermagic mismatch: $built_vm"
+            exit 1
+          }
+          grep -qx '# CONFIG_MODVERSIONS is not set' "$SRC/.config"
+
+          for sym in __check_object_size fortify_panic page_address; do
+            awk -v s="$sym" '$2==s && $1=="0x00000000" && $4=="EXPORT_SYMBOL" {ok=1} END{exit !ok}' \
+              "$SRC/Module.symvers" || {
+                echo "::error::Target zero-CRC EXPORT_SYMBOL missing: $sym"
+                grep -w "$sym" "$SRC/Module.symvers" || true
+                exit 1
+              }
+          done
+
+          missing_total=0
+          for name in alsa_bridge.ko diretta_direct.ko; do
+            imports="$GITHUB_WORKSPACE/.work/diretta/$name.imports"
+            missing="$GITHUB_WORKSPACE/.work/diretta/$name.missing-target"
+            : > "$missing"
+            while IFS= read -r symbol; do
+              [[ -n "$symbol" ]] || continue
+              awk -v s="$symbol" '$2==s {ok=1} END{exit !ok}' "$SRC/Module.symvers" \
+                || echo "$symbol" >> "$missing"
+            done < "$imports"
+            count="$(wc -l < "$missing")"
+            missing_total=$((missing_total + count))
+            echo "$name: imports=$(wc -l < "$imports"), missing=$count"
+            if [[ "$count" -gt 0 ]]; then cat "$missing"; fi
+          done
+          [[ "$missing_total" -eq 0 ]] || {
+            echo "::error::Diretta imports missing from V9 exports."
+            exit 1
+          }
+
+          {
+            echo "Expected vermagic: $VERMAGIC_EXPECTED"
+            echo "Built vermagic: $built_vm"
+            echo "CONFIG_MODVERSIONS: disabled"
+            echo
+            for sym in __check_object_size fortify_panic page_address; do
+              awk -v s="$sym" '$2==s {print}' "$SRC/Module.symvers"
+            done
+            echo
+            echo "All undefined imports of both original modules exist in target Module.symvers."
+          } | tee "$GITHUB_WORKSPACE/diretta-v9-compatibility-report.txt"
+
+      - name: Package kernel7.img, initramfs7, DTB and modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PKG="$GITHUB_WORKSPACE/package"
+          MODDIR="$PKG/lib/modules/$KERNEL_RELEASE"
+          INITROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
+          mkdir -p "$PKG/boot" "$PKG/build-info" "$MODDIR/extra/diretta" \
+            "$INITROOT/usr/lib/modules"
+
+          install -m 0644 "$SRC/arch/arm/boot/zImage" "$PKG/boot/kernel7.img"
+          install -m 0644 "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb" \
+            "$PKG/boot/bcm2836-rpi-2-b.dtb"
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            INSTALL_MOD_PATH="$PKG" modules_install
+          rm -f "$MODDIR/build" "$MODDIR/source"
+          install -m 0644 modules/diretta/alsa_bridge.ko "$MODDIR/extra/diretta/"
+          install -m 0644 modules/diretta/diretta_direct.ko "$MODDIR/extra/diretta/"
+          depmod -b "$PKG" "$KERNEL_RELEASE"
+
+          cp -a "$MODDIR" "$INITROOT/usr/lib/modules/$KERNEL_RELEASE"
+          (
+            cd "$INITROOT"
+            find . -print0 | LC_ALL=C sort -z \
+              | cpio --null --create --format=newc --owner=0:0
+          ) | gzip -1n > "$PKG/boot/initramfs7"
+          gzip -t "$PKG/boot/initramfs7"
+          gzip -dc "$PKG/boot/initramfs7" | cpio -it \
+            > "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "extra/diretta/alsa_bridge.ko" "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "extra/diretta/diretta_direct.ko" "$PKG/build-info/initramfs7.contents.txt"
+
+          python3 - "$GITHUB_WORKSPACE/rpi-boot/config.txt" "$PKG/boot/config.txt" <<'PY'
+          import sys
+          from pathlib import Path
+          src, dst = map(Path, sys.argv[1:])
+          lines = src.read_text().splitlines()
+          out = []
+          for line in lines:
+              s = line.strip()
+              if s.startswith(("kernel=", "device_tree=", "initramfs ", "auto_initramfs=")):
+                  continue
+              out.append(line)
+          out += ["", "[all]", "kernel=kernel7.img",
+                  "device_tree=bcm2836-rpi-2-b.dtb", "auto_initramfs=0",
+                  "initramfs initramfs7 followkernel", ""]
+          dst.write_text("\n".join(out))
+          PY
+          install -m 0644 rpi-boot/cmdline.txt "$PKG/boot/cmdline.txt"
+
+          install -m 0644 "$SRC/.config" "$PKG/build-info/v9-final.config"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 a20-original-Module.symvers "$PKG/build-info/"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          install -m 0644 "$SRC/vmlinux" "$PKG/build-info/vmlinux"
+          install -m 0644 "$HARDWARE_CONFIG" "$PKG/build-info/"
+          install -m 0644 "$ABI_FRAGMENT" "$PKG/build-info/"
+          for f in v9-config-audit.txt v9-module-inventory.txt \
+            diretta-v9-compatibility-report.txt fedora-source-provenance.txt \
+            srpm-identification.txt; do
+            install -m 0644 "$GITHUB_WORKSPACE/$f" "$PKG/build-info/"
+          done
+
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2B Fedora 36 / Diretta kernel V9
+          Kernel release: $KERNEL_RELEASE
+          Hardware config base: $HARDWARE_CONFIG
+          Fedora source package: $SRPM_NAME
+
+          Boot: kernel7.img, initramfs7, bcm2836-rpi-2-b.dtb
+          Modules: lib/modules/$KERNEL_RELEASE/
+          Original Diretta modules are installed unchanged under extra/diretta/.
+
+          initramfs7 is a gzip-compressed newc archive containing this
+          release's modules under /usr/lib/modules/$KERNEL_RELEASE and has no
+          /init. This relies on built-in SD/MMC, partition and ext4 support
+          and the ext4 PARTUUID root specified by cmdline.txt.
+
+          The available SRPM is 6.2.15-100.fc36; the required target release
+          string is -215 to match the original modules. This is not proof that
+          -100 and -215 Fedora patch revisions are identical. See build-info.
+
+          Back up the SD card. Static ABI checks do not replace real boot and
+          module-load tests on the Raspberry Pi 2B.
+          EOF
+
+          (cd "$PKG" && find boot lib -type f -print0 | sort -z | xargs -0 sha256sum) \
+            > "$PKG/build-info/PACKAGE-SHA256SUMS.txt"
+          cd "$GITHUB_WORKSPACE"
+          tar -czf "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz" package
+          sha256sum "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz" \
+            > "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v9.tar.gz.sha256"
+
+      - name: Upload V9 artifact and audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2b-fedora36-kernel-${{ env.KERNEL_RELEASE_EXPECTED }}-v9
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2b-fedora36-kernel-${{ env.KERNEL_RELEASE_EXPECTED }}-v9.tar.gz
+            rpi2b-fedora36-kernel-${{ env.KERNEL_RELEASE_EXPECTED }}-v9.tar.gz.sha256
+            output-v9-rpi2b.config
+            v9-vs-bcm2709-defconfig.diff
+            v9-config-audit.txt
+            v9-module-inventory.txt
+            diretta-v9-compatibility-report.txt
+            fedora-source-provenance.txt
+            srpm-identification.txt
+            package/README.txt
+            package/boot/**
+            package/build-info/**
