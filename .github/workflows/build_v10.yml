@@ -68,6 +68,12 @@ jobs:
           } | tee "$GITHUB_WORKSPACE/v10-source-provenance.txt"
           echo "SRC=$SRC" >> "$GITHUB_ENV"
 
+          # Preserve provenance above, then remove Git metadata before the
+          # deliberate Makefile SUBLEVEL edit. Linux setlocalversion otherwise
+          # appends '+' because the tracked Makefile appears dirty.
+          rm -rf "$SRC/.git"
+          test ! -e "$SRC/.git"
+
       - name: Validate original Diretta modules and extract ABI imports
         shell: bash
         run: |
