@@ -50,7 +50,6 @@ download_and_verify "$DTB_URL" "$DTB_SHA256" "$OUT/original-sun8i-h3-orangepi-pc
 
 dumpimage -l "$OUT/original-uInitrd" | tee "$OUT/uinitrd-image-header.txt"
 grep -Eq 'Image Type:.*ARM Linux RAMDisk Image' "$OUT/uinitrd-image-header.txt"
- "$OUT/uinitrd-image-header.txt"
 
 PAYLOAD="$OUT/original-uInitrd.payload.gz"
 dumpimage -p 0 -o "$PAYLOAD" "$OUT/original-uInitrd"
