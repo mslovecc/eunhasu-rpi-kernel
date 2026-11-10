@@ -106,7 +106,7 @@ jobs:
           SYMVERS="$(find .work/a20-devel -type f -name Module.symvers -print -quit)"
           test -n "$SYMVERS"
           install -m 0644 "$SYMVERS" a20-original-Module.symvers
-          A20_CONFIG="$(find .work/a20-devel -type f \\( -name running-kernel.config -o -name .config \\) -print -quit)"
+          A20_CONFIG="$(find .work/a20-devel -type f \( -name running-kernel.config -o -name .config \) -print -quit)"
           A20_UTS="$(find .work/a20-devel -type f -name utsrelease.h -print -quit)"
           A20_AUTOCONF="$(find .work/a20-devel -type f -name autoconf.h -print -quit)"
           test -n "$A20_CONFIG" && test -n "$A20_UTS" && test -n "$A20_AUTOCONF"
