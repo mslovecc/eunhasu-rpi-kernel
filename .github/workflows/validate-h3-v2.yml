@@ -118,7 +118,7 @@ jobs:
           test -L "$ROOT_CHECK/lib"
           test "$(readlink "$ROOT_CHECK/lib")" = "usr/lib"
 
-      - name: Verify Release DTB matches Linux 6.2.15 source
+      - name: Compare Release DTB with Linux 6.2.15 source-built DTB
         shell: bash
         env:
           SOURCE_URL: https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15/linux-6.2.15.tar.xz
@@ -143,18 +143,19 @@ jobs:
           mkdir -p .work/dtb-compare
           "$SRC/scripts/dtc/dtc" -I dtb -O dts -s -o .work/dtb-compare/source.dts "$BUILT_DTB"
           "$SRC/scripts/dtc/dtc" -I dtb -O dts -s -o .work/dtb-compare/release.dts "$RELEASE_DTB"
-          cmp .work/dtb-compare/source.dts .work/dtb-compare/release.dts || {
-            echo "::group::Normalized DTS difference"
+          if cmp -s .work/dtb-compare/source.dts .work/dtb-compare/release.dts; then
+            echo "Release DTB normalized contents: identical to source-built DTB"
+          else
+            echo "::warning::Release DTB differs from the Linux 6.2.15 source-built DTB; it will be retained as a reference only."
+            echo "::group::Normalized DTS differences (first 220 lines)"
             diff -u .work/dtb-compare/source.dts .work/dtb-compare/release.dts | sed -n '1,220p' || true
             echo "::endgroup::"
-            echo "::error::Release DTB contents differ from the DTB built from Linux 6.2.15 source."
-            echo "Source DTB:   $(sha256sum "$BUILT_DTB" | awk '{print $1}')"
-            echo "Release DTB:  $(sha256sum "$RELEASE_DTB" | awk '{print $1}')"
-            echo "Source DTS:   $(sha256sum .work/dtb-compare/source.dts | awk '{print $1}')"
-            echo "Release DTS:  $(sha256sum .work/dtb-compare/release.dts | awk '{print $1}')"
-            exit 1
-          }
-          echo "Release DTB has the same normalized device-tree contents as the Linux 6.2.15 source-built DTB."
+          fi
+          echo "Source DTB SHA256:  $(sha256sum "$BUILT_DTB" | awk '{print $1}')"
+          echo "Release DTB SHA256: $(sha256sum "$RELEASE_DTB" | awk '{print $1}')"
+          echo "Source DTS SHA256:  $(sha256sum .work/dtb-compare/source.dts | awk '{print $1}')"
+          echo "Release DTS SHA256: $(sha256sum .work/dtb-compare/release.dts | awk '{print $1}')"
+          echo "Active package DTB will be the source-built DTB."
 
       - name: Test initramfs archive path matching
         shell: bash
