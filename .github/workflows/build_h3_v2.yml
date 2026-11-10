@@ -102,7 +102,15 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          printf '%s\\n' init ./init | grep -Eq '^(\./)?init    name: Linux 6.2.15 / Orange Pi PC H3 / Armbian 6.18.35 config / Diretta
+          printf '%s\n' init ./init | grep -Eq '^(\./)?init$'
+          printf '%s\n' usr/lib/modules/6.2.15-215.fc36.armv7hl/modules.dep \
+            ./usr/lib/modules/6.2.15-215.fc36.armv7hl/modules.dep \
+            | grep -Eq '^(\./)?usr/lib/modules/6.2.15-215.fc36.armv7hl/'
+
+  build:
+    needs: validate
+    if: github.event_name == 'workflow_dispatch'
+    name: Linux 6.2.15 / Orange Pi PC H3 / Armbian 6.18.35 config / Diretta
     runs-on: ubuntu-24.04
     timeout-minutes: 240
 
