@@ -71,6 +71,8 @@ jobs:
             readelf -h "$module" | grep -q 'Machine:.*ARM'
           done
           sha256sum modules/diretta/*.ko | tee diretta-module-sha256.txt
+          echo "2fdb6d8dd5179988e13be85442cabebe3816adac4c01e0094a87aa34b1aea2db  modules/diretta/alsa_bridge.ko" | sha256sum --check
+          echo "b0fc07fbbbe8f5bd2f007927ecc98d6d7f23753973226f8fc489ea9374ea4ed0  modules/diretta/diretta_direct.ko" | sha256sum --check
           echo "SRC=$SRC" >> "$GITHUB_ENV"
           echo "EXPECTED_VERMAGIC=$EXPECTED_VERMAGIC" >> "$GITHUB_ENV"
 
