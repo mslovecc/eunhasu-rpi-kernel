@@ -173,18 +173,28 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
+          set -x
           RPISRC="$GITHUB_WORKSPACE/.work/rpi-linux"
           PATCH="$GITHUB_WORKSPACE/rpi2b-hardware-backport.patch"
-          git clone --filter=blob:none --no-checkout --depth=1 "$RPI_LINUX_REPO" "$RPISRC"
-          git -C "$RPISRC" fetch --depth=1 origin "$RPI_BASE_COMMIT"
-          git -C "$RPISRC" fetch --depth=1 origin "$RPI_BACKPORT_COMMIT"
-          git -C "$RPISRC" cat-file -e "$RPI_BASE_COMMIT^{commit}"
-          git -C "$RPISRC" cat-file -e "$RPI_BACKPORT_COMMIT^{commit}"
 
-          # Generate a narrow patch from the exact upstream 6.2.15 base to
-          # the pinned Raspberry Pi 6.2.16 tree. Do not replace the Fedora tree.
+          # Fetch both pinned commits into explicit local refs. Fetching raw
+          # SHA values into FETCH_HEAD twice is ambiguous on shallow clones.
+          git clone --filter=blob:none --no-checkout --depth=1 "$RPI_LINUX_REPO" "$RPISRC"
+          git -C "$RPISRC" fetch --no-tags --depth=1 origin \
+            "+$RPI_BASE_COMMIT:refs/remotes/backport/base" \
+            "+$RPI_BACKPORT_COMMIT:refs/remotes/backport/head"
+
+          BASE_REF="refs/remotes/backport/base"
+          HEAD_REF="refs/remotes/backport/head"
+          git -C "$RPISRC" rev-parse --verify "$BASE_REF^{commit}"
+          git -C "$RPISRC" rev-parse --verify "$HEAD_REF^{commit}"
+          git -C "$RPISRC" cat-file -e "$BASE_REF^{tree}"
+          git -C "$RPISRC" cat-file -e "$HEAD_REF^{tree}"
+
+          # Generate only the selected RPi2B hardware changes. Keep Fedora
+          # Linux 6.2.15 as the actual build source.
           git -C "$RPISRC" diff --binary --no-ext-diff \
-            "$RPI_BASE_COMMIT" "$RPI_BACKPORT_COMMIT" -- \
+            "$BASE_REF" "$HEAD_REF" -- \
             arch/arm/include/asm/irqflags.h \
             arch/arm/kernel/fiqasm.S \
             arch/arm/mach-bcm/Kconfig \
@@ -200,14 +210,13 @@ jobs:
             drivers/usb/host/dwc_otg \
             > "$PATCH"
 
-          test -s "$PATCH"
-          grep -q '^+config USB_DWCOTG' "$PATCH"
-          grep -q '^+.*select FIQ' "$PATCH"
-          grep -q '^+.*core_initcall(rpi_firmware_init)' "$PATCH"
-          grep -q '^+.*postcore_initcall(__bcm2835_clk_driver_init)' "$PATCH"
+          test -s "$PATCH" || { echo "::error::Selected Raspberry Pi diff is empty"; exit 1; }
+          grep -q '^+config USB_DWCOTG' "$PATCH" || { echo "::error::DWCOTG Kconfig addition absent from generated patch"; exit 1; }
+          grep -q '^+.*select FIQ' "$PATCH" || { echo "::error::FIQ Kconfig addition absent from generated patch"; exit 1; }
+          grep -q '^+.*core_initcall(rpi_firmware_init)' "$PATCH" || { echo "::error::Firmware initcall change absent from generated patch"; exit 1; }
+          grep -q '^+.*postcore_initcall(__bcm2835_clk_driver_init)' "$PATCH" || { echo "::error::Clock initcall change absent from generated patch"; exit 1; }
 
-          # Fedora's existing patch does not modify these selected paths.
-          # Fail before changing the tree if any hunk cannot be applied cleanly.
+          # Verify every hunk before applying anything to the Fedora source.
           (cd "$SRC" && git apply --check "$PATCH")
           (cd "$SRC" && git apply --whitespace=nowarn "$PATCH")
 
