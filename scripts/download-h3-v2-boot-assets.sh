@@ -52,7 +52,8 @@ dumpimage -l "$OUT/original-uInitrd" | tee "$OUT/uinitrd-image-header.txt"
 grep -Eq 'Image Type:.*ARM Linux RAMDisk Image' "$OUT/uinitrd-image-header.txt"
 
 PAYLOAD="$OUT/original-uInitrd.payload.gz"
-dumpimage -p 0 -o "$PAYLOAD" "$OUT/original-uInitrd"
+[[ "$(stat -c '%s' "$OUT/original-uInitrd")" -gt 64 ]]
+dd if="$OUT/original-uInitrd" of="$PAYLOAD" bs=64 skip=1 status=none
 gzip -t "$PAYLOAD"
 gzip -dc "$PAYLOAD" | cpio -it --quiet > "$OUT/original-initramfs-file-list.txt"
 grep -Eq '^(\./)?init$' "$OUT/original-initramfs-file-list.txt" || {
