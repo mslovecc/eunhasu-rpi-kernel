@@ -1,0 +1,162 @@
+name: Audit Fedora 6.2.15-100 ARMv7 RPMs
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/audit_fedora_6.2.15_100.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install RPM and device-tree tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm rpm2cpio cpio device-tree-compiler xz-utils zstd kmod
+
+      - name: Verify and extract Fedora kernel RPMs
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          RPM_DIR="$GITHUB_WORKSPACE/fedora-6.2.15-100"
+          OUT="$RUNNER_TEMP/fedora-6.2.15-100-audit"
+          WORK="$RUNNER_TEMP/fedora-rpm-extracted"
+          mkdir -p "$OUT"/{metadata,filelists,review/config,review/boot,review/devel,review/dtb,review/modules,review/module-metadata} "$WORK"
+
+          expected=(
+            kernel-core-6.2.15-100.fc36.armv7hl.rpm
+            kernel-devel-6.2.15-100.fc36.armv7hl.rpm
+            kernel-modules-6.2.15-100.fc36.armv7hl.rpm
+            kernel-modules-core-6.2.15-100.fc36.armv7hl.rpm
+            kernel-modules-extra-6.2.15-100.fc36.armv7hl.rpm
+          )
+
+          {
+            echo "Fedora 36 ARMv7 kernel RPM audit"
+            echo "Expected NEVRA: 6.2.15-100.fc36.armv7hl"
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Runner: $(uname -a)"
+            echo "Date UTC: $(date -u -Is)"
+            echo
+          } | tee "$OUT/audit-report.txt"
+
+          for name in "${expected[@]}"; do
+            rpmfile="$RPM_DIR/$name"
+            [[ -s "$rpmfile" ]] || { echo "Missing or empty RPM: $rpmfile" >&2; exit 1; }
+
+            pkg="${name%.rpm}"
+            dest="$WORK/$pkg"
+            mkdir -p "$dest"
+
+            {
+              echo "===== $name ====="
+              sha256sum "$rpmfile"
+              rpm -qp --qf 'Name: %{NAME}\nEpoch: %{EPOCH}\nVersion: %{VERSION}\nRelease: %{RELEASE}\nArch: %{ARCH}\nBuildtime: %{BUILDTIME:date}\n' "$rpmfile"
+              rpm -qp --requires "$rpmfile" | sort -u > "$OUT/metadata/$pkg.requires.txt"
+              rpm -qpl "$rpmfile" > "$OUT/filelists/$pkg.files.txt"
+              echo
+            } | tee -a "$OUT/audit-report.txt"
+
+            echo "Extracting $name"
+            (cd "$dest" && rpm2cpio "$rpmfile" | cpio -idm --quiet --no-absolute-filenames)
+          done
+
+          sha256sum "${expected[@]/#/$RPM_DIR/}" > "$OUT/rpm-sha256sums.txt"
+
+          # Complete extracted path/size inventory and module path inventory.
+          find "$WORK" -type f -printf '%P\t%s bytes\n' | sort > "$OUT/all-extracted-files.tsv"
+          find "$WORK" -type f \( -name '*.ko' -o -name '*.ko.xz' -o -name '*.ko.gz' -o -name '*.ko.zst' \) -printf '%P\n' | sort > "$OUT/kernel-modules.txt"
+
+          # Extract useful config, symbol, generated-header, boot and module metadata files.
+          while IFS= read -r -d '' f; do
+            b="$(basename "$f")"
+            case "$b" in
+              config-*|.config) cp --parents "$f" "$OUT/review/config/" ;;
+              System.map*) cp --parents "$f" "$OUT/review/boot/" ;;
+              vmlinuz*|Image|zImage) cp --parents "$f" "$OUT/review/boot/" ;;
+              Module.symvers|utsrelease.h|autoconf.h|auto.conf|kernel.release)
+                cp --parents "$f" "$OUT/review/devel/" ;;
+              modules.builtin*|modules.dep*|modules.alias*|modules.softdep*|modules.order)
+                cp --parents "$f" "$OUT/review/module-metadata/" ;;
+            esac
+          done < <(find "$WORK" -type f \( -name 'config-*' -o -name '.config' -o -name 'System.map*' -o -name 'vmlinuz*' -o -name Image -o -name zImage -o -name Module.symvers -o -name utsrelease.h -o -name autoconf.h -o -name auto.conf -o -name kernel.release -o -name 'modules.builtin*' -o -name 'modules.dep*' -o -name 'modules.alias*' -o -name 'modules.softdep*' -o -name modules.order \) -print0)
+
+          # Copy all DTBs/overlays, preserving package-relative paths, then decompile.
+          while IFS= read -r -d '' f; do
+            cp --parents "$f" "$OUT/review/dtb/"
+          done < <(find "$WORK" -type f \( -iname '*.dtb' -o -iname '*.dtbo' \) -print0)
+
+          mkdir -p "$OUT/review/dtb/decompiled"
+          dtb_count=0
+          while IFS= read -r -d '' f; do
+            rel="${f#"$WORK"/}"
+            target="$OUT/review/dtb/decompiled/${rel//\//__}.dts"
+            mkdir -p "$(dirname "$target")"
+            if dtc -I dtb -O dts -o "$target" "$f" 2>> "$OUT/dtc-warnings.txt"; then
+              ((dtb_count+=1))
+            else
+              echo "FAILED: $rel" >> "$OUT/dtc-failures.txt"
+            fi
+          done < <(find "$WORK" -type f \( -iname '*.dtb' -o -iname '*.dtbo' \) -print0)
+
+          # Preserve the actual modules and metadata most relevant to the Pi 2 USB/LAN9514 path.
+          grep -Ei '(^|/)(bcm|raspberry|dwc|ehci|ohci|smsc|lan78|usbnet|usb-storage|mmc|sdhci|vchiq|bcm2835)' "$OUT/kernel-modules.txt" > "$OUT/rpi-usb-network-modules.txt" || true
+
+          while IFS= read -r rel; do
+            [[ -n "$rel" ]] || continue
+            f="$WORK/$rel"
+            [[ -f "$f" ]] && cp --parents "$f" "$OUT/review/modules/"
+          done < "$OUT/rpi-usb-network-modules.txt"
+
+          # Produce modinfo for the selected modules when supported by the host rpm tools.
+          : > "$OUT/selected-module-modinfo.txt"
+          while IFS= read -r rel; do
+            [[ -n "$rel" ]] || continue
+            f="$WORK/$rel"
+            [[ -f "$f" ]] || continue
+            {
+              echo "===== $rel ====="
+              modinfo "$f" 2>&1 || true
+              echo
+            } >> "$OUT/selected-module-modinfo.txt"
+          done < "$OUT/rpi-usb-network-modules.txt"
+
+          {
+            echo
+            echo "===== Extraction summary ====="
+            echo "Extracted regular files: $(find "$WORK" -type f | wc -l)"
+            echo "Kernel module files: $(wc -l < "$OUT/kernel-modules.txt")"
+            echo "DTB/DTBO files: $(find "$WORK" -type f \( -iname '*.dtb' -o -iname '*.dtbo' \) | wc -l)"
+            echo "Successfully decompiled DTBs/DTBOs: $dtb_count"
+            echo
+            echo "Key kernel files:"
+            find "$OUT/review" -type f -printf '%P\t%s bytes\n' | sort
+            echo
+            echo "No RPM was installed. No running kernel or device configuration was changed."
+          } | tee -a "$OUT/audit-report.txt"
+
+          # Record checksums for every review artifact.
+          (cd "$OUT" && find . -type f ! -name review-sha256sums.txt -print0 | sort -z | xargs -0 -r sha256sum) > "$OUT/review-sha256sums.txt"
+
+          tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/fedora-6.2.15-100-audit.tar.gz" "$(basename "$OUT")"
+
+      - name: Upload audit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fedora-6.2.15-100-rpm-audit
+          path: ${{ runner.temp }}/fedora-6.2.15-100-audit.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
