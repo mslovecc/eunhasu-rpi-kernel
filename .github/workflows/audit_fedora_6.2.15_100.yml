@@ -2,6 +2,9 @@ name: Audit Fedora 6.2.15-100 ARMv7 RPMs
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/audit_fedora_6.2.15_100.yml'
 
 permissions:
   contents: read
@@ -19,7 +22,7 @@ jobs:
       - name: Install RPM and device-tree tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm rpm2cpio cpio device-tree-compiler xz-utils zstd
+          sudo apt-get install -y rpm rpm2cpio cpio device-tree-compiler xz-utils zstd kmod
 
       - name: Verify and extract Fedora kernel RPMs
         shell: bash
