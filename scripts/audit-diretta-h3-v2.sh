@@ -142,7 +142,8 @@ COMPAT="$(fdtget -t s "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb" / compa
 
 dumpimage -l "$PKG/boot/uInitrd" > "$WORK/uinitrd-header.txt"
 grep -Eq 'Image Type:.*ARM Linux RAMDisk Image' "$WORK/uinitrd-header.txt" || fail "uInitrd is not a U-Boot RAMDisk image"
-dumpimage -p 0 -o "$WORK/uinitrd-payload.gz" "$PKG/boot/uInitrd"
+[[ "$(stat -c '%s' "$PKG/boot/uInitrd")" -gt 64 ]] || fail "uInitrd is shorter than a legacy U-Boot image header"
+dd if="$PKG/boot/uInitrd" of="$WORK/uinitrd-payload.gz" bs=64 skip=1 status=none
 gzip -t "$WORK/uinitrd-payload.gz" || fail "uInitrd gzip payload is corrupt"
 gzip -dc "$WORK/uinitrd-payload.gz" | cpio -it --quiet > "$WORK/uinitrd-files.txt"
 grep -Eq '^(\./)?init$' "$WORK/uinitrd-files.txt" || fail "uInitrd /init is missing"
