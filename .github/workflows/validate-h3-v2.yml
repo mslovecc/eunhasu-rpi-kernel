@@ -1,0 +1,91 @@
+name: Validate Orange Pi PC H3 V2 scripts
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/build_h3_v2.yml"
+      - ".github/workflows/validate-h3-v2.yml"
+      - "scripts/**"
+      - "config/config-6.18.35-current-sunxi"
+      - "modules/diretta/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Bash syntax and static checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install static validation tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Verify required H3 V2 files
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for f in \
+            .github/workflows/build_h3_v2.yml \
+            scripts/download-h3-v2-sources.sh \
+            scripts/prepare-h3-v2-config.sh \
+            scripts/audit-diretta-h3-v2.sh \
+            scripts/package-h3.sh \
+            scripts/download-h3-v2-boot-assets.sh \
+            scripts/build-h3-v2-uinitrd.sh \
+            config/config-6.18.35-current-sunxi \
+            modules/diretta/SHA256SUMS \
+            modules/diretta/alsa_bridge.ko \
+            modules/diretta/diretta_direct.ko; do
+            test -s "$f" || {
+              echo "::error::Missing or empty required file: $f"
+              exit 1
+            }
+          done
+
+      - name: Normalize script permissions and check Bash syntax
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          scripts=(
+            scripts/download-h3-v2-sources.sh
+            scripts/prepare-h3-v2-config.sh
+            scripts/audit-diretta-h3-v2.sh
+            scripts/package-h3.sh
+            scripts/download-h3-v2-boot-assets.sh
+            scripts/build-h3-v2-uinitrd.sh
+          )
+          chmod 0755 "${scripts[@]}"
+          for script in "${scripts[@]}"; do
+            test -x "$script"
+            bash -n "$script"
+          done
+
+      - name: ShellCheck production scripts
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          shellcheck --severity=error \
+            scripts/download-h3-v2-sources.sh \
+            scripts/prepare-h3-v2-config.sh \
+            scripts/audit-diretta-h3-v2.sh \
+            scripts/package-h3.sh \
+            scripts/download-h3-v2-boot-assets.sh \
+            scripts/build-h3-v2-uinitrd.sh
+
+      - name: Test initramfs archive path matching
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          printf '%s\\n' init ./init | grep -Eq '^(\./)?init$'
+          printf '%s\\n' usr/lib/modules/6.2.15-215.fc36.armv7hl/modules.dep \
+            ./usr/lib/modules/6.2.15-215.fc36.armv7hl/modules.dep \
+            | grep -Eq '^(\./)?usr/lib/modules/6.2.15-215.fc36.armv7hl/'
