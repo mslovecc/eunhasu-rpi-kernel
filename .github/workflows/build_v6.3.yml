@@ -1,0 +1,289 @@
+name: Build Raspberry Pi 2B Kernel from Raspberry Pi downstream 6.2.16 (V6.3 - Diretta)
+
+"on":
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Parallel build jobs (0 = auto)"
+        required: false
+        default: "0"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpi2b-kernel-v6-3-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Downstream Linux 6.2.16 / Raspberry Pi 2B / Diretta V6.3
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      RPI_SOURCE_REPOSITORY: raspberrypi/linux
+      RPI_SOURCE_COMMIT: 4c7938b86db7dfccbfd4d2a840091cbb7fbf2e9f
+      EXPECTED_KERNEL_RELEASE: 6.2.15-215.fc36.armv7hl
+      DIRETTA_FRAGMENT: config/diretta-rpi2.fragment
+      BOOT_FRAGMENT: config/rpi2b-v6.2-boot.fragment
+
+    steps:
+      - name: Checkout build definitions and original Diretta modules
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Checkout pinned Raspberry Pi downstream kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/linux
+          ref: ${{ env.RPI_SOURCE_COMMIT }}
+          path: .work/linux
+          fetch-depth: 1
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ca-certificates cpio device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf git kmod libelf-dev libssl-dev make python3 rsync xz-utils binutils-arm-linux-gnueabihf
+          arm-linux-gnueabihf-gcc --version | head -n 1
+          echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
+
+      - name: Verify pinned source, target modules and original vermagic
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SRC="$GITHUB_WORKSPACE/.work/linux"
+          ACTUAL_COMMIT="$(git -C "$SRC" rev-parse HEAD)"
+          [[ "$ACTUAL_COMMIT" == "$RPI_SOURCE_COMMIT" ]]
+          [[ "$(make -s -C "$SRC" ARCH=arm kernelversion)" == "6.2.16" ]]
+          for f in "$DIRETTA_FRAGMENT" "$BOOT_FRAGMENT" modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            test -s "$f" || { echo "::error::Missing required input: $f"; exit 1; }
+          done
+          EXPECTED_VERMAGIC="6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
+          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            vm="$(modinfo -F vermagic "$module" | xargs)"
+            echo "$module: $vm"
+            [[ "$vm" == "$EXPECTED_VERMAGIC" ]]
+            readelf -h "$module" | grep -q 'Class:.*ELF32'
+            readelf -h "$module" | grep -q 'Machine:.*ARM'
+          done
+          sha256sum modules/diretta/*.ko | tee diretta-module-sha256.txt
+          echo "SRC=$SRC" >> "$GITHUB_ENV"
+          echo "EXPECTED_VERMAGIC=$EXPECTED_VERMAGIC" >> "$GITHUB_ENV"
+
+      - name: Set compatibility release string (source remains downstream 6.2.16)
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$SRC"
+          grep -qx 'SUBLEVEL = 16' Makefile
+          sed -i 's/^SUBLEVEL = 16$/SUBLEVEL = 15/' Makefile
+          grep -qx 'SUBLEVEL = 15' Makefile
+          echo "Pinned source commit: $RPI_SOURCE_COMMIT" | tee "$GITHUB_WORKSPACE/v6.3-source-info.txt"
+          echo "Upstream source version: 6.2.16" | tee -a "$GITHUB_WORKSPACE/v6.3-source-info.txt"
+          echo "Compatibility release version: 6.2.15-215.fc36.armv7hl" | tee -a "$GITHUB_WORKSPACE/v6.3-source-info.txt"
+
+      - name: Configure downstream bcm2709_defconfig plus Diretta and boot overlays
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$SRC"
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" bcm2709_defconfig
+          bash scripts/kconfig/merge_config.sh -m -r .config \
+            "$GITHUB_WORKSPACE/$BOOT_FRAGMENT" \
+            "$GITHUB_WORKSPACE/$DIRETTA_FRAGMENT"
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
+          cp .config "$GITHUB_WORKSPACE/output-rpi2b-v6.3.config"
+
+          require_config() {
+            local key="$1" expected="$2"
+            if ! grep -qx "$key=$expected" .config; then
+              echo "::error::Required config not resolved: $key=$expected"
+              grep -E "^($key=|# $key is not set)" .config || true
+              exit 1
+            fi
+          }
+          require_disabled() {
+            local key="$1"
+            grep -qx "# $key is not set" .config || {
+              echo "::error::Required disabled config not resolved: $key"
+              grep -E "^($key=|# $key is not set)" .config || true
+              exit 1
+            }
+          }
+
+          # Diretta module ABI / vermagic conditions.
+          require_config CONFIG_SMP y
+          require_config CONFIG_PREEMPT y
+          require_config CONFIG_MODULES y
+          require_config CONFIG_MODULE_UNLOAD y
+          require_config CONFIG_HIGHMEM y
+          require_disabled CONFIG_MODVERSIONS
+          require_config CONFIG_LOCALVERSION '"-215.fc36.armv7hl"'
+          require_disabled CONFIG_LOCALVERSION_AUTO
+          grep -qx '# CONFIG_MODULE_SIG is not set' .config
+
+          # Pi 2B boot and LAN9514 USB host chain: do not allow a silent
+          # fallback to a config without the downstream DWC OTG host driver.
+          require_config CONFIG_USB y
+          require_config CONFIG_USB_DWCOTG y
+          require_config CONFIG_FIQ y
+          require_config CONFIG_USB_STORAGE y
+          require_config CONFIG_USB_NET_SMSC95XX y
+          require_config CONFIG_MMC y
+          require_config CONFIG_MMC_BLOCK y
+          require_config CONFIG_EXT4_FS y
+          require_config CONFIG_DEVTMPFS y
+          require_config CONFIG_DEVTMPFS_MOUNT y
+          require_config CONFIG_BLK_DEV_INITRD y
+
+          # Do not disable audio class or vendor-specific USB audio drivers.
+          require_config CONFIG_SND_USB_AUDIO m
+          grep -E '^(CONFIG_SND_USB_[A-Z0-9_]+=)' .config > "$GITHUB_WORKSPACE/v6.3-usb-audio-config.txt"
+          test -s "$GITHUB_WORKSPACE/v6.3-usb-audio-config.txt"
+
+          ACTUAL_RELEASE="$(make -s ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
+          echo "Resolved kernelrelease: $ACTUAL_RELEASE"
+          [[ "$ACTUAL_RELEASE" == "$EXPECTED_KERNEL_RELEASE" ]] || {
+            echo "::error::Expected $EXPECTED_KERNEL_RELEASE but got $ACTUAL_RELEASE"
+            exit 1
+          }
+          echo "KERNEL_RELEASE=$ACTUAL_RELEASE" >> "$GITHUB_ENV"
+          cp .config "$GITHUB_WORKSPACE/output-rpi2b-v6.3.config"
+
+      - name: Build kernel image, modules and device trees
+        shell: bash
+        env:
+          BUILD_JOBS: ${{ inputs.jobs }}
+        run: |
+          set -Eeuo pipefail
+          JOBS="$BUILD_JOBS"
+          [[ -n "$JOBS" && "$JOBS" != "0" ]] || JOBS="$(nproc)"
+          [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" -j"$JOBS" zImage modules dtbs
+          test -s "$SRC/arch/arm/boot/zImage"
+          test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
+          test -s "$SRC/Module.symvers"
+          test -s "$SRC/System.map"
+          test -s "$SRC/vmlinux"
+          readelf -h "$SRC/vmlinux" | grep -q 'Machine:.*ARM'
+
+          # The downstream source must actually build the Pi 2B USB host.
+          test -s "$SRC/drivers/usb/host/dwc_otg/dwc_otg.ko" || {
+            find "$SRC/drivers/usb/host/dwc_otg" -maxdepth 1 -type f -printf '%f\n' | sort
+            echo "::error::Expected DWC OTG driver object was not built."
+            exit 1
+          }
+          find "$SRC" -type f -name '*.ko' | sed "s#^$SRC/##" | sort > "$GITHUB_WORKSPACE/v6.3-module-inventory.txt"
+
+      - name: Audit Diretta module vermagic, ELF attributes and kernel exports
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          SAMPLE_KO="$(find "$SRC" -type f -name '*.ko' -print -quit)"
+          test -n "$SAMPLE_KO"
+          BUILT_VERMAGIC="$(modinfo -F vermagic "$SAMPLE_KO" | xargs)"
+          [[ "$BUILT_VERMAGIC" == "$EXPECTED_VERMAGIC" ]]
+
+          for sym in __check_object_size fortify_panic page_address; do
+            awk -v s="$sym" '$2==s && $1=="0x00000000" && $4=="EXPORT_SYMBOL" {found=1} END{exit !found}' "$SRC/Module.symvers" || {
+              echo "::error::Required export missing or wrong CRC/type: $sym"
+              exit 1
+            }
+          done
+
+          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            arm-linux-gnueabihf-nm -u "$module" 2>/dev/null | awk '$1=="U"{print $2}' | sort -u > "/tmp/$(basename "$module").imports"
+            while IFS= read -r sym; do
+              [[ -n "$sym" ]] || continue
+              if ! awk -v s="$sym" '$2==s{found=1} END{exit !found}' "$SRC/Module.symvers"; then
+                echo "::warning::Import not found in kernel Module.symvers: $(basename "$module"): $sym"
+              fi
+            done < "/tmp/$(basename "$module").imports"
+          done
+
+          {
+            echo "Expected module vermagic: $EXPECTED_VERMAGIC"
+            echo "Built module vermagic: $BUILT_VERMAGIC"
+            echo "Kernel source commit: $RPI_SOURCE_COMMIT"
+            echo
+            echo "[Required exports]"
+            grep -E '(__check_object_size|fortify_panic|page_address)' "$SRC/Module.symvers"
+            echo
+            echo "[Diretta module hashes]"
+            sha256sum modules/diretta/*.ko
+            echo
+            echo "NOTE: static symbol and vermagic checks do not prove binary ABI compatibility."
+          } > "$GITHUB_WORKSPACE/v6.3-diretta-audit.txt"
+
+      - name: Package kernel, modules, DTB, overlays and original Diretta modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PKG="$GITHUB_WORKSPACE/package"
+          MODDIR="$PKG/lib/modules/$KERNEL_RELEASE"
+          mkdir -p "$PKG/boot/overlays" "$MODDIR/extra/diretta" "$PKG/build-info"
+          install -m 0644 "$SRC/arch/arm/boot/zImage" "$PKG/boot/kernel7.img"
+          install -m 0644 "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb" "$PKG/boot/"
+          for dtb in bcm2837-rpi-3-b.dtb bcm2837-rpi-3-b-plus.dtb; do
+            [[ ! -s "$SRC/arch/arm/boot/dts/$dtb" ]] || install -m 0644 "$SRC/arch/arm/boot/dts/$dtb" "$PKG/boot/"
+          done
+          if compgen -G "$SRC/arch/arm/boot/dts/overlays/*.dtbo" > /dev/null; then
+            cp "$SRC"/arch/arm/boot/dts/overlays/*.dtbo "$PKG/boot/overlays/"
+          fi
+          [[ ! -f "$SRC/arch/arm/boot/dts/overlays/README" ]] || cp "$SRC/arch/arm/boot/dts/overlays/README" "$PKG/boot/overlays/"
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" INSTALL_MOD_PATH="$PKG" modules_install
+          install -m 0644 modules/diretta/alsa_bridge.ko "$MODDIR/extra/diretta/"
+          install -m 0644 modules/diretta/diretta_direct.ko "$MODDIR/extra/diretta/"
+          depmod -b "$PKG" "$KERNEL_RELEASE"
+
+          install -m 0644 "$SRC/.config" "$PKG/build-info/kernel.config"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          cp "$GITHUB_WORKSPACE/v6.3-source-info.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/v6.3-diretta-audit.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/v6.3-usb-audio-config.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/v6.3-module-inventory.txt" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/$DIRETTA_FRAGMENT" "$PKG/build-info/"
+          cp "$GITHUB_WORKSPACE/$BOOT_FRAGMENT" "$PKG/build-info/"
+
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2B / Diretta kernel package V6.3
+          Kernel release string: $KERNEL_RELEASE
+          Actual source: Raspberry Pi downstream Linux 6.2.16
+          Pinned source commit: $RPI_SOURCE_COMMIT
+          Source Makefile SUBLEVEL is changed from 16 to 15 solely to create
+          the requested compatibility release string and module vermagic.
+          This does not make the 6.2.16 kernel binary ABI-identical to Fedora
+          6.2.15. Do not assume the closed-source Diretta modules are safe
+          solely because vermagic matches. Test module loading and audio
+          operation on the actual Pi 2B before production use.
+          Boot image: boot/kernel7.img
+          Pi 2B device tree: boot/bcm2836-rpi-2-b.dtb
+          Modules: lib/modules/$KERNEL_RELEASE/
+          Original Diretta modules: lib/modules/$KERNEL_RELEASE/extra/diretta/
+          EOF
+
+          cd "$GITHUB_WORKSPACE"
+          tar -czf "rpi2b-kernel-$KERNEL_RELEASE-v6.3.tar.gz" package
+          sha256sum "rpi2b-kernel-$KERNEL_RELEASE-v6.3.tar.gz" > "rpi2b-kernel-$KERNEL_RELEASE-v6.3.tar.gz.sha256"
+
+      - name: Upload V6.3 package and audit outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6.3-downstream-6.2.16
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6.3.tar.gz
+            rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v6.3.tar.gz.sha256
+            output-rpi2b-v6.3.config
+            v6.3-source-info.txt
+            v6.3-diretta-audit.txt
+            v6.3-usb-audio-config.txt
+            v6.3-module-inventory.txt
+            diretta-module-sha256.txt
