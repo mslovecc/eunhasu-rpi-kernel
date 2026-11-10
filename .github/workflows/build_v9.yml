@@ -106,7 +106,27 @@ jobs:
               exit 1
             }
           done
-          echo "Original 6.2.15-215 Module.symvers confirms all three zero-CRC EXPORT_SYMBOL entries."
+
+          original_missing=0
+          for name in alsa_bridge.ko diretta_direct.ko; do
+            imports=".work/diretta/$name.imports"
+            missing=".work/diretta/$name.missing-original"
+            : > "$missing"
+            while IFS= read -r symbol; do
+              [[ -n "$symbol" ]] || continue
+              if ! awk -v s="$symbol" '$2 == s {found=1} END {exit !found}' "$original_symvers"; then
+                echo "$symbol" >> "$missing"
+              fi
+            done < "$imports"
+            count="$(wc -l < "$missing")"
+            original_missing=$((original_missing + count))
+            if [[ "$count" -gt 0 ]]; then
+              echo "::error::Original Diretta imports absent from original kernel Module.symvers: $name"
+              cat "$missing"
+            fi
+          done
+          [[ "$original_missing" -eq 0 ]] || exit 1
+          echo "Original 6.2.15-215 Module.symvers confirms all three zero-CRC exports and all imports of both modules."
 
       - name: Download and verify Fedora 6.2.15 SRPM and source tarball
         shell: bash
