@@ -87,7 +87,7 @@ dumpimage -p 0 -o "$WORK/check.gz" "$OUTPUT"
 gzip -t "$WORK/check.gz"
 gzip -dc "$WORK/check.gz" | cpio -it --quiet > "$WORK/new-file-list.txt"
 grep -Eq '^(\\./)?init
-grep -q "^usr/lib/modules/$KERNEL_RELEASE/" "$WORK/new-file-list.txt"
+grep -Eq "^(\\./)?usr/lib/modules/$KERNEL_RELEASE/" "$WORK/new-file-list.txt"
 
 KO="$(find "$NEW_MODULE_DIR" -type f -name '*.ko' -print -quit)"
 VM="$(modinfo -F vermagic "$KO" | xargs)"
