@@ -47,7 +47,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ca-certificates cpio device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf git kmod libelf-dev libssl-dev make python3 rsync xz-utils binutils-arm-linux-gnueabihf
+          sudo apt-get install -y bc bison build-essential ca-certificates cpio device-tree-compiler dracut-core dwarves flex gcc-arm-linux-gnueabihf git kmod libelf-dev libssl-dev make python3 rsync xz-utils binutils-arm-linux-gnueabihf
           arm-linux-gnueabihf-gcc --version | head -n 1
           echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
 
@@ -173,9 +173,9 @@ jobs:
           readelf -h "$SRC/vmlinux" | grep -q 'Machine:.*ARM'
 
           # The downstream source must actually build the Pi 2B USB host.
-          test -s "$SRC/drivers/usb/host/dwc_otg/dwc_otg.ko" || {
+          test -s "$SRC/drivers/usb/host/dwc_otg/built-in.a" || {
             find "$SRC/drivers/usb/host/dwc_otg" -maxdepth 1 -type f -printf '%f\n' | sort
-            echo "::error::Expected DWC OTG driver object was not built."
+            echo "::error::DWC OTG built-in archive was not generated."
             exit 1
           }
           find "$SRC" -type f -name '*.ko' | sed "s#^$SRC/##" | sort > "$GITHUB_WORKSPACE/v6.3-module-inventory.txt"
@@ -241,6 +241,13 @@ jobs:
           install -m 0644 modules/diretta/diretta_direct.ko "$MODDIR/extra/diretta/"
           depmod -b "$PKG" "$KERNEL_RELEASE"
 
+          # Build an initramfs from the target ARM module tree, never from the
+          # x86_64 runner host kernel. Keep the V6 boot artifact convention.
+          dracut --force --no-hostonly --no-hostonly-cmdline \\
+            --kver "$KERNEL_RELEASE" --kmoddir "$MODDIR" \\
+            --omit "ply plymouth" "$PKG/boot/initramfs7" "$KERNEL_RELEASE"
+          test -s "$PKG/boot/initramfs7"
+
           install -m 0644 "$SRC/.config" "$PKG/build-info/kernel.config"
           install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
           install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
@@ -263,6 +270,7 @@ jobs:
           solely because vermagic matches. Test module loading and audio
           operation on the actual Pi 2B before production use.
           Boot image: boot/kernel7.img
+          Initramfs: boot/initramfs7
           Pi 2B device tree: boot/bcm2836-rpi-2-b.dtb
           Modules: lib/modules/$KERNEL_RELEASE/
           Original Diretta modules: lib/modules/$KERNEL_RELEASE/extra/diretta/
