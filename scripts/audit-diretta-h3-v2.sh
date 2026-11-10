@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Static compatibility checks are advisory for runtime loading; never force-load modules.
 set -Eeuo pipefail
 
 if [[ $# -ne 2 ]]; then
