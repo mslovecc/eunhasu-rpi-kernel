@@ -4,6 +4,39 @@ on:
   workflow_dispatch:
     inputs:
       jobs:
+        description: "Parallel build jobs (0 = auto)"
+        required: false
+        default: "0"
+        type: string
+      original_uinitrd_url:
+        description: "Verified Eunhasu uInitrd from release 6.2.15"
+        required: false
+        default: "https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15/uInitrd"
+        type: string
+      original_uinitrd_sha256:
+        description: "SHA256 of original uInitrd"
+        required: false
+        default: "7273d8d0868402c31f2aa380304c5d67bd6183028d193624a72dbea46b1cddbe"
+        type: string
+      original_dtb_url:
+        description: "Verified Orange Pi PC H3 DTB from release 6.2.15"
+        required: false
+        default: "https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15/sun8i-h3-orangepi-pc.dtb"
+        type: string
+      original_dtb_sha256:
+        description: "SHA256 of original Orange Pi PC H3 DTB"
+        required: false
+        default: "fd66f85a2543fe133fa2b884c834c88154b82700368c8e92616b78d3105fa9c2"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: orangepi-pc-h3-kernel-v2-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
   build:
     name: Linux 6.2.15 / Orange Pi PC H3 / Armbian 6.18.35 config / Diretta
     runs-on: ubuntu-24.04
@@ -94,8 +127,7 @@ on:
             }
           done
 
-
-      - name: Download and verify original Eunhasu uInitrd
+      - name: Download and verify original Eunhasu uInitrd and Release DTB
         shell: bash
         env:
           ORIGINAL_UINITRD_URL: ${{ inputs.original_uinitrd_url }}
@@ -198,257 +230,6 @@ on:
 
           file arch/arm/boot/zImage \
             arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb
-          echo "Source-built DTB will be compared byte-for-byte with the verified Release DTB during packaging."
-
-      - name: Install modules, audit Diretta ABI and package V2
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          bash scripts/package-h3.sh "$SRC" "$KERNEL_RELEASE"
-          bash scripts/audit-diretta-h3-v2.sh "$SRC" "$GITHUB_WORKSPACE/package-orangepi-pc"
-
-          install -m 0644 .work/original-boot/original-boot-assets-report.txt \
-            package-orangepi-pc/build-info/original-boot-assets-report.txt
-          install -m 0644 diretta-h3-v2-compatibility-report.txt \
-            package-orangepi-pc/build-info/diretta-h3-v2-compatibility-report.txt
-          install -m 0644 h3-v2-config-report.txt \
-            package-orangepi-pc/build-info/h3-v2-config-report.txt
-          install -m 0644 "$ARMBIAN_CONFIG" \
-            package-orangepi-pc/build-info/config-6.18.35-current-sunxi
-          install -m 0644 output-orangepi-pc-h3-v2-base.config \
-            package-orangepi-pc/build-info/armbian-base-config-before-kconfig-6.2.15.config
-          install -m 0644 .work/srpm-identification.txt \
-            package-orangepi-pc/build-info/srpm-identification.txt
-
-          (
-            cd package-orangepi-pc
-            find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum
-          ) > package-orangepi-pc/SHA256SUMS
-          tar --sort=name --mtime='UTC 1970-01-01' \
-            --owner=0 --group=0 --numeric-owner \
-            -C "$GITHUB_WORKSPACE" -cf - package-orangepi-pc | gzip -n -9 \
-            > "orangepi-pc-h3-v2-kernel-$KERNEL_RELEASE.tar.gz"
-          sha256sum "orangepi-pc-h3-v2-kernel-$KERNEL_RELEASE.tar.gz" \
-            > "orangepi-pc-h3-v2-kernel-$KERNEL_RELEASE.tar.gz.sha256"
-
-      - name: Upload Orange Pi PC H3 V2 package
-        uses: actions/upload-artifact@v4
-        with:
-          name: orangepi-pc-h3-kernel-${{ env.KERNEL_RELEASE }}-v2
-          if-no-files-found: error
-          retention-days: 30
-          path: |
-            orangepi-pc-h3-v2-kernel-${{ env.KERNEL_RELEASE }}.tar.gz
-            orangepi-pc-h3-v2-kernel-${{ env.KERNEL_RELEASE }}.tar.gz.sha256
-            output-orangepi-pc.config
-            output-orangepi-pc.localversion
-            h3-v2-config-report.txt
-            diretta-h3-v2-compatibility-report.txt
-            output-orangepi-pc-h3-v2-base.config
-            package-orangepi-pc/README-INSTALL.txt
-            package-orangepi-pc/build-info/**
-
-          printf '%s\\n' usr/lib/modules/6.2.15-215.fc36.armv7hl/modules.dep \
-            ./usr/lib/modules/6.2.15-215.fc36.armv7hl/modules.dep \
-            | grep -Eq '^(\./)?usr/lib/modules/6.2.15-215.fc36.armv7hl/'
-
-  build:
-    needs: validate
-    if: github.event_name == 'workflow_dispatch'
-    name: Linux 6.2.15 / Orange Pi PC H3 / Armbian 6.18.35 config / Diretta
-    runs-on: ubuntu-24.04
-    timeout-minutes: 240
-
-    env:
-      KERNEL_VERSION: "6.2.15"
-      RELEASE_TAG: "6.2.15"
-      KERNEL_RELEASE: "6.2.15-215.fc36.armv7hl"
-      SRPM_NAME: "kernel-6.2.15-100.fc36.src.rpm"
-      SOURCE_TARBALL: "linux-6.2.15.tar.xz"
-      SRPM_SHA256: "f2f2fef31c54111720782b7867bc727d4f67866864a0e54c9dab9c606737f570"
-      SOURCE_SHA256: "bc2d24c3a8bba92f92f3b480381fe7c80bb85d694fda656a1e030f55b926c766"
-      FALLBACK_BASE_URL: "https://s2.bravo123.top"
-      SUPPORT_DIR: "sources/kernel-srpm"
-      ARMBIAN_CONFIG: "config/config-6.18.35-current-sunxi"
-      EXPECTED_VERMAGIC: "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Install build dependencies
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          sudo apt-get update
-          sudo apt-get install -y \
-            bc bison build-essential ca-certificates cpio curl \
-            device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf \
-            git kmod libelf-dev libncurses-dev libssl-dev make patch \
-            python3 rpm rsync xz-utils binutils-arm-linux-gnueabihf u-boot-tools
-
-          arm-linux-gnueabihf-gcc --version | sed -n '1p'
-          echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
-
-      - name: Validate V2 scripts, Armbian config and original Diretta modules
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          for f in \
-            "$ARMBIAN_CONFIG" \
-            scripts/download-h3-v2-sources.sh \
-            scripts/prepare-h3-v2-config.sh \
-            scripts/audit-diretta-h3-v2.sh \
-            scripts/package-h3.sh \
-            scripts/download-h3-v2-boot-assets.sh \
-            scripts/build-h3-v2-uinitrd.sh \
-            "$SUPPORT_DIR/kernel.spec" \
-            "$SUPPORT_DIR/patch-6.2-redhat.patch" \
-            "$SUPPORT_DIR/Makefile.rhelver" \
-            "$SUPPORT_DIR/SHA256SUMS" \
-            modules/diretta/SHA256SUMS \
-            modules/diretta/alsa_bridge.ko \
-            modules/diretta/diretta_direct.ko; do
-            test -s "$f" || { echo "::error::Missing/empty required file: $f"; exit 1; }
-          done
-
-          chmod 0755 \
-            scripts/download-h3-v2-sources.sh \
-            scripts/prepare-h3-v2-config.sh \
-            scripts/audit-diretta-h3-v2.sh \
-            scripts/package-h3.sh \
-            scripts/download-h3-v2-boot-assets.sh \
-            scripts/build-h3-v2-uinitrd.sh
-
-          for f in \
-            scripts/download-h3-v2-sources.sh \
-            scripts/prepare-h3-v2-config.sh \
-            scripts/audit-diretta-h3-v2.sh \
-            scripts/package-h3.sh \
-            scripts/download-h3-v2-boot-assets.sh \
-            scripts/build-h3-v2-uinitrd.sh; do
-            bash -n "$f"
-            test -x "$f"
-          done
-
-          (cd "$SUPPORT_DIR" && sha256sum --check SHA256SUMS)
-          (cd modules/diretta && sha256sum --check SHA256SUMS)
-
-          for module in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
-            vermagic="$(modinfo -F vermagic "$module" | xargs)"
-            [[ "$vermagic" == "$EXPECTED_VERMAGIC" ]] || {
-              echo "::error::Unexpected original Diretta vermagic: $module ($vermagic)"
-              exit 1
-            }
-          done
-
-
-      - name: Download and verify original Eunhasu uInitrd
-        shell: bash
-        env:
-          ORIGINAL_UINITRD_URL: ${{ inputs.original_uinitrd_url }}
-          ORIGINAL_UINITRD_SHA256: ${{ inputs.original_uinitrd_sha256 }}
-          ORIGINAL_DTB_URL: ${{ inputs.original_dtb_url }}
-          ORIGINAL_DTB_SHA256: ${{ inputs.original_dtb_sha256 }}
-        run: |
-          set -Eeuo pipefail
-          bash scripts/download-h3-v2-boot-assets.sh \
-            "$ORIGINAL_UINITRD_URL" "$ORIGINAL_UINITRD_SHA256" \
-            "$ORIGINAL_DTB_URL" "$ORIGINAL_DTB_SHA256"
-          echo "ORIGINAL_UINITRD=$GITHUB_WORKSPACE/.work/original-boot/original-uInitrd" >> "$GITHUB_ENV"
-          echo "ORIGINAL_DTB=$GITHUB_WORKSPACE/.work/original-boot/original-sun8i-h3-orangepi-pc.dtb" >> "$GITHUB_ENV"
-
-      - name: Download Linux source and Fedora SRPM from GitHub Release (fallback mirror enabled)
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          bash scripts/download-h3-v2-sources.sh
-
-      - name: Extract and verify Fedora SRPM patch payload (Fedora config is not used)
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          mkdir -p .work/srpm-payload
-          (
-            cd .work/srpm-payload
-            rpm2cpio "../downloads/$SRPM_NAME" | cpio -idm --quiet
-          )
-
-          SPEC="$(find .work/srpm-payload -type f -name kernel.spec -print -quit)"
-          PATCH="$(find .work/srpm-payload -type f -name patch-6.2-redhat.patch -print -quit)"
-          RHELVER="$(find .work/srpm-payload -type f -name Makefile.rhelver -print -quit)"
-
-          for f in "$SPEC" "$PATCH" "$RHELVER"; do
-            test -s "$f" || { echo "::error::Missing SRPM payload file: $f"; exit 1; }
-          done
-
-          cmp "$SPEC" "$SUPPORT_DIR/kernel.spec"
-          cmp "$PATCH" "$SUPPORT_DIR/patch-6.2-redhat.patch"
-          cmp "$RHELVER" "$SUPPORT_DIR/Makefile.rhelver"
-
-          rpm -qp --qf '%{NAME} %{VERSION}-%{RELEASE}\n' ".work/downloads/$SRPM_NAME" \
-            | tee .work/srpm-identification.txt
-          grep -qx 'kernel 6.2.15-100.fc36' .work/srpm-identification.txt
-
-      - name: Extract Linux source and apply Fedora 6.2.15 patch
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          mkdir -p .work/source
-          tar -xJf ".work/downloads/$SOURCE_TARBALL" -C .work/source
-          SRC="$GITHUB_WORKSPACE/.work/source/linux-6.2.15"
-          test -s "$SRC/Makefile"
-          test -s "$SRC/arch/arm/boot/dts/sun8i-h3-orangepi-pc.dts"
-          test -s "$SRC/arch/arm/boot/dts/sun8i-h3.dtsi"
-
-          VERSION="$(make -s -C "$SRC" ARCH=arm kernelversion)"
-          [[ "$VERSION" == "$KERNEL_VERSION" ]] || {
-            echo "::error::Unexpected Linux source version: $VERSION"
-            exit 1
-          }
-
-          patch --directory="$SRC" --strip=1 --forward \
-            < .work/srpm-payload/patch-6.2-redhat.patch
-
-          install -m 0644 "$SUPPORT_DIR/Makefile.rhelver" "$SRC/Makefile.rhelver"
-          cmp .work/srpm-payload/Makefile.rhelver "$SRC/Makefile.rhelver"
-
-          echo "SRC=$SRC" >> "$GITHUB_ENV"
-
-      - name: Prepare Armbian 6.18.35 sunxi config + Diretta ABI for Linux 6.2.15
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          bash scripts/prepare-h3-v2-config.sh "$SRC" "$KERNEL_RELEASE"
-
-      - name: Build zImage, H3 DTBs and kernel modules
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          cd "$SRC"
-
-          JOBS="${{ inputs.jobs }}"
-          if [[ "$JOBS" == "0" ]]; then
-            JOBS="$(nproc)"
-          fi
-          [[ "$JOBS" =~ ^[1-9][0-9]*$ ]] || {
-            echo "::error::Invalid build jobs value: $JOBS"
-            exit 1
-          }
-
-          make -j"$JOBS" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
-            zImage dtbs modules
-
-          test -s arch/arm/boot/zImage
-          test -s arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb
-          test -s Module.symvers
-          test -s System.map
-
-          file arch/arm/boot/zImage \
-            arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb
-          echo "Source-built DTB will be compared byte-for-byte with the verified Release DTB during packaging."
 
       - name: Install modules, audit Diretta ABI and package V2
         shell: bash
