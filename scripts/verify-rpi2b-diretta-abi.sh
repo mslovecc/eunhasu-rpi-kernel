@@ -24,12 +24,15 @@ echo "Expected vermagic: $EXPECTED_VERMAGIC"
 [[ -s "$ALSA" && -s "$DIRECT" ]] || fail "Original Diretta module missing"
 [[ "$(make -s -C "$SRC" ARCH=arm kernelrelease)" == "$EXPECTED_RELEASE" ]] || fail "kernelrelease mismatch"
 
-for cfg in CONFIG_SMP CONFIG_PREEMPT CONFIG_MODULES CONFIG_MODULE_UNLOAD CONFIG_HIGHMEM CONFIG_HARDENED_USERCOPY CONFIG_FORTIFY_SOURCE; do
+for cfg in CONFIG_ARM CONFIG_ARCH_MULTI_V7 CONFIG_CPU_V7 CONFIG_NEON CONFIG_SMP CONFIG_PREEMPT CONFIG_MODULES CONFIG_MODULE_UNLOAD CONFIG_HIGHMEM CONFIG_HARDENED_USERCOPY CONFIG_FORTIFY_SOURCE; do
   grep -qx "$cfg=y" "$SRC/.config" || fail "$cfg must be enabled"
 done
-for cfg in CONFIG_MODVERSIONS CONFIG_MODULE_SIG CONFIG_MODULE_SIG_FORCE CONFIG_MODULE_SIG_ALL; do
+for cfg in CONFIG_MODVERSIONS CONFIG_MODULE_SIG; do
   grep -qx "# $cfg is not set" "$SRC/.config" || fail "$cfg must be disabled"
 done
+if grep -qx 'CONFIG_MODULE_SIG_FORCE=y' "$SRC/.config"; then
+  fail "Forced module signatures must not be enabled"
+fi
 grep -qx 'CONFIG_LOCALVERSION="-215.fc36.armv7hl"' "$SRC/.config" || fail "LOCALVERSION mismatch"
 grep -qx '# CONFIG_LOCALVERSION_AUTO is not set' "$SRC/.config" || fail "LOCALVERSION_AUTO must be disabled"
 
@@ -113,7 +116,9 @@ echo "[Signature policy]"
 [[ "$(modinfo -F signer "$ALSA" | xargs)" == "" ]] || echo "NOTE: alsa_bridge has a signer; kernel does not enforce signatures"
 [[ "$(modinfo -F signer "$DIRECT" | xargs)" == "" ]] || echo "NOTE: diretta_direct has a signer; kernel does not enforce signatures"
 grep -qx '# CONFIG_MODULE_SIG is not set' "$SRC/.config" || fail "Module signing unexpectedly enabled"
-grep -qx '# CONFIG_MODULE_SIG_FORCE is not set' "$SRC/.config" || fail "Forced module signatures unexpectedly enabled"
+if grep -qx 'CONFIG_MODULE_SIG_FORCE=y' "$SRC/.config"; then
+  fail "Forced module signatures unexpectedly enabled"
+fi
 
 echo
 echo "STATIC ABI GATES PASSED."
