@@ -22,12 +22,20 @@ test -s "$BUILT_DTB"
 test -s "$ORIGINAL_DTB"
 test -s "$ORIGINAL_UINITRD"
 
-# The Release DTB is used in the package only if it is byte-identical to
-# the DTB produced by this exact Linux source tree.
-if ! cmp -s "$BUILT_DTB" "$ORIGINAL_DTB"; then
-  echo "::error::Release DTB differs from the DTB built from Linux $KERNEL_RELEASE source."
+# Compare normalized device-tree source, not raw DTB bytes: FDT header
+# totalsize/padding and DTC versions can change binary bytes without changing
+# the device tree consumed by the kernel.
+DTC="$SRC/scripts/dtc/dtc"
+test -x "$DTC"
+mkdir -p "$ROOT/.work/dtb-compare"
+"$DTC" -I dtb -O dts -s -o "$ROOT/.work/dtb-compare/source.dts" "$BUILT_DTB"
+"$DTC" -I dtb -O dts -s -o "$ROOT/.work/dtb-compare/release.dts" "$ORIGINAL_DTB"
+if ! cmp -s "$ROOT/.work/dtb-compare/source.dts" "$ROOT/.work/dtb-compare/release.dts"; then
+  echo "::error::Release DTB contents differ from the DTB built from Linux $KERNEL_RELEASE source."
   echo "Built DTB:   $(sha256sum "$BUILT_DTB" | awk '{print $1}')"
   echo "Release DTB: $(sha256sum "$ORIGINAL_DTB" | awk '{print $1}')"
+  echo "Built DTS:   $(sha256sum "$ROOT/.work/dtb-compare/source.dts" | awk '{print $1}')"
+  echo "Release DTS: $(sha256sum "$ROOT/.work/dtb-compare/release.dts" | awk '{print $1}')"
   exit 1
 fi
 test -s "$SRC/Module.symvers"
@@ -89,7 +97,8 @@ MODULE_BYTES="$(du -sb "$MODULE_DIR" | awk '{print $1}')"
   echo "zImage bytes: $(stat -c '%s' "$PKG/boot/zImage")"
   echo "Release DTB bytes (verified byte-identical to this source build): $(stat -c '%s' "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb")"
   echo "Release DTB SHA256: $(sha256sum "$ORIGINAL_DTB" | awk '{print $1}')"
-  echo "Source-built DTB SHA256: $(sha256sum "$BUILT_DTB" | awk '{print $1}')" 
+  echo "Source-built DTB SHA256: $(sha256sum "$BUILT_DTB" | awk '{print $1}')"
+  echo "Normalized DTB content SHA256: $(sha256sum "$ROOT/.work/dtb-compare/source.dts" | awk '{print $1}')" 
   echo "Rebuilt uInitrd bytes: $(stat -c '%s' "$PKG/boot/uInitrd")"
   echo "Installed module count: $MODULE_COUNT"
   echo "Installed module tree bytes: $MODULE_BYTES"
@@ -114,9 +123,9 @@ Files:
 
 Boot asset strategy:
   - zImage is built by this V2 workflow.
-  - DTB is downloaded from the 6.2.15 Release and must be byte-identical
-    to the DTB built from the same Linux source tree as zImage; otherwise
-    packaging stops.
+  - DTB is downloaded from the 6.2.15 Release and must have identical
+    normalized device-tree contents to the DTB built from the same Linux
+    source tree as zImage; otherwise packaging stops.
   - uInitrd retains original initramfs-tools scripts, udev, binaries and
     configuration. Only the old 6.18.35 module directory is replaced with
     this build's $KERNEL_RELEASE modules; depmod indexes are regenerated.
