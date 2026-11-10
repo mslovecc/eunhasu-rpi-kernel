@@ -39,3 +39,13 @@ CONFIG_DEVTMPFS_MOUNT=y
 
 # Keep Fedora's USB/DWC2/SMSC95XX and USB-audio selections unless Kconfig
 # dependency resolution requires a change. Do not force them in this fragment.
+
+# Remove desktop/server GPU drivers unrelated to Raspberry Pi 2.
+# Keep Raspberry Pi's own VC4/V3D graphics support as supplied by the base.
+# These options were observed compiling in the V8 build log.
+# CONFIG_DRM_AMDGPU is not set
+# CONFIG_DRM_NOUVEAU is not set
+# CONFIG_DRM_RADEON is not set
+
+# Remove unrelated PCI/SAS storage controller driver observed in V8 logs.
+# CONFIG_SCSI_MPI3MR is not set
