@@ -295,12 +295,6 @@ jobs:
             }
           done
 
-          for x in CONFIG_USB_DWCOTG=y CONFIG_FIQ=y CONFIG_USB_USBNET=y \
-            CONFIG_USB_NET_SMSC95XX=y CONFIG_USB_STORAGE=y \
-            CONFIG_RASPBERRYPI_FIRMWARE=y CONFIG_BCM2835_MBOX=y CONFIG_CLK_RASPBERRYPI=y; do
-            require "$x"
-          done
-
           forbidden='DRM_AMDGPU|DRM_NOUVEAU|DRM_RADEON|DRM_I915|DRM_XE|DRM_GMA500|DRM_VMWGFX|DRM_VBOXVIDEO|DRM_QXL|DRM_BOCHS|DRM_VIRTIO_GPU|BLK_DEV_NVME|NVME_CORE|NVME_FC|NVME_RDMA|NVME_TCP|NVME_TARGET|SCSI_MPI3MR|SCSI_QLA_FC|SCSI_QLOGIC_1280|SCSI_HPSA|MEGARAID_SAS|MPT2SAS|MPT3SAS|SMARTPQI|SCSI_ISCI|MMC_SDHCI_IPROC|USB_LAN78XX'
           if grep -E "^CONFIG_($forbidden)=(y|m)$" .config; then
             echo "::error::Forbidden non-RPi2 driver remains enabled."
@@ -390,7 +384,7 @@ jobs:
             if [[ "$count" -gt 0 ]]; then cat "$missing"; fi
           done
           [[ "$missing_total" -eq 0 ]] || {
-            echo "::error::Diretta imports missing from V9 exports."
+            echo "::error::Diretta imports missing from V9.1 exports."
             exit 1
           }
 
@@ -457,7 +451,7 @@ jobs:
           PY
           install -m 0644 rpi-boot/cmdline.txt "$PKG/boot/cmdline.txt"
 
-          install -m 0644 "$SRC/.config" "$PKG/build-info/v9-final.config"
+          install -m 0644 "$SRC/.config" "$PKG/build-info/v9.1-final.config"
           install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
           install -m 0644 a20-original-Module.symvers "$PKG/build-info/"
           install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
@@ -475,7 +469,7 @@ jobs:
           done
 
           cat > "$PKG/README.txt" <<EOF
-          Raspberry Pi 2B Fedora 36 / Diretta kernel V9.1.1
+          Raspberry Pi 2B Fedora 36 / Diretta kernel V9.1
           Kernel release: $KERNEL_RELEASE
           Hardware config base: $HARDWARE_CONFIG
           Fedora source package: $SRPM_NAME

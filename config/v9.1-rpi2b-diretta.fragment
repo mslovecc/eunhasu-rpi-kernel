@@ -1,4 +1,4 @@
-# V9: Fedora 36 Linux 6.2.15 source + Raspberry Pi 2B bcm2709 hardware base.
+# V9.1: Fedora 36 Linux 6.2.15 source + Raspberry Pi 2B bcm2709 hardware base.
 # The bcm2709_defconfig is the sole hardware/configuration starting point.
 # This fragment adds Fedora direct-SD-root and original Diretta ABI requirements.
 
