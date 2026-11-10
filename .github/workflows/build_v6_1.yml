@@ -270,6 +270,7 @@ jobs:
             rpi2b-v6.1-config-report.txt
             rpi2b-v6.1-module-audit.txt
             rpi2b-v6.1-module-inventory.txt
+            rpi2b-v6.1-sdhost-audit.txt
             diretta-compatibility-report.txt
             package/README.txt
             package/boot/kernel7.img
