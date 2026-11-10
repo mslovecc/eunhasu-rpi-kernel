@@ -38,7 +38,16 @@ PAYLOAD="$OUT/original-uInitrd.payload.gz"
 dumpimage -p 0 -o "$PAYLOAD" "$OUT/original-uInitrd"
 gzip -t "$PAYLOAD"
 gzip -dc "$PAYLOAD" | cpio -it --quiet > "$OUT/original-initramfs-file-list.txt"
-grep -qx 'init' "$OUT/original-initramfs-file-list.txt"
+grep -Eq '^(\\./)?init
+
+{
+  echo "Original U-Boot uInitrd SHA256: $UINITRD_SHA256"
+  echo "Original uInitrd bytes: $(stat -c '%s' "$OUT/original-uInitrd")"
+  echo "Original initramfs entries: $(wc -l < "$OUT/original-initramfs-file-list.txt" | tr -d ' ')"
+  echo "Original initramfs module files: $(grep -c 'ko$' "$OUT/original-initramfs-file-list.txt" || true)"
+  echo "U-Boot image header: ARM/Linux RAMDisk"
+} | tee "$OUT/original-boot-assets-report.txt"
+ "$OUT/original-initramfs-file-list.txt"
 
 {
   echo "Original U-Boot uInitrd SHA256: $UINITRD_SHA256"
