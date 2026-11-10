@@ -10,7 +10,7 @@ workflow `.github/workflows/build_v4.yml`.
 - Kernel source: Linux 6.2.15 plus the checked-in Fedora 6.2.15 SRPM patch
 - Kernel release: `6.2.15-215.fc36.armv7hl`
 - Diretta modules: original `alsa_bridge.ko` and `diretta_direct.ko`; copied byte-for-byte and never stripped
-- Original boot baseline: verified Eunhasu `uInitrd` and `sun8i-h3-orangepi-pc.dtb`
+- Original boot baseline: verified Eunhasu `uInitrd`; matching DTB is built from Linux 6.2.15 source
 
 ## Original boot assets are workflow inputs
 
