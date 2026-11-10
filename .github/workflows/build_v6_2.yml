@@ -237,8 +237,10 @@ jobs:
           sha256sum "$PKG/boot/initramfs7" > "$PKG/build-info/initramfs7.sha256"
           printf '%s\n' \
             "initramfs7 is copied byte-for-byte from main:sources/eunhasu/initramfs7." \
-            "Its embedded early-boot modules have NOT been rebuilt for $KERNEL_RELEASE." \
-            "Do not assume runtime compatibility until boot testing validates it." \
+            "The V6.2 boot-chain audit inspects whether /init or linuxrc exists." \
+            "If neither exists, the kernel proceeds to normal root-device discovery;" \
+            "the presence of old module files alone does not load those modules." \
+            "If an early userspace entry exists, its module dependencies need review." \
             > "$PKG/build-info/INITRAMFS-NOTE.txt"
           install -m 0644 "$SRC/.config" "$PKG/build-info/bcm2709-diretta-v6.2.config"
           install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
