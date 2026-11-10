@@ -10,7 +10,7 @@ workflow `.github/workflows/build_v4.yml`.
 - Kernel source: Linux 6.2.15 plus the checked-in Fedora 6.2.15 SRPM patch
 - Kernel release: `6.2.15-215.fc36.armv7hl`
 - Diretta modules: original `alsa_bridge.ko` and `diretta_direct.ko`; copied byte-for-byte and never stripped
-- Original boot baseline: verified Eunhasu `uInitrd`; matching DTB is built from Linux 6.2.15 source
+- Original boot baseline: verified Eunhasu `uInitrd` and Release DTB; the Release DTB must match the DTB built from Linux 6.2.15 source byte-for-byte
 
 ## Original boot assets are workflow inputs
 
@@ -20,15 +20,20 @@ GitHub Release by default:
 - URL: `https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15/uInitrd`
 - SHA256: `7273d8d0868402c31f2aa380304c5d67bd6183028d193624a72dbea46b1cddbe`
 
-The Release also contains an original `zImage`, but V2 deliberately does not
-reuse it: the workflow builds a fresh zImage from the Linux 6.2.15 source tree.
-The matching `sun8i-h3-orangepi-pc.dtb` is built from that same source tree
-alongside zImage. No separate DTB upload is required.
+The Release also contains an original `zImage`. V2 deliberately builds a fresh
+zImage and the matching kernel modules from the same Linux 6.2.15 source tree
+and effective Armbian-derived configuration; it does not mix the Release
+zImage with modules from a separate build.
 
-The uInitrd URL and SHA256 remain overridable through workflow_dispatch.
-The workflow verifies the checksum, U-Boot RAMDisk header, gzip payload and
-initramfs cpio structure. The generated DTB is checked for the Orange Pi PC
-model and compatible string before packaging.
+The Release DTB is downloaded and SHA256-verified. The workflow also builds
+the DTB from the exact source tree and requires a byte-for-byte match before
+packaging the Release copy. This makes the Release DTB an independently
+verified boot asset rather than silently substituting an unverified file.
+
+The uInitrd and DTB URLs/checksums remain overridable through workflow_dispatch.
+The workflow verifies the uInitrd checksum, U-Boot RAMDisk header, gzip payload
+and initramfs cpio structure, and checks the DTB's Orange Pi PC model and
+compatible string.
 
 ## Configuration and size controls
 
@@ -60,10 +65,11 @@ the old module directory:
 6. Verify U-Boot header, gzip payload, cpio contents, module directory and
    sample module vermagic.
 
-The V2 zImage and Orange Pi PC DTB are both built from the selected Linux source.
-The original Eunhasu uInitrd userspace is preserved, with its module tree rebuilt
-for the new kernel. This keeps the kernel and DTB matched while retaining the
-existing Eunhasu initramfs boot logic.
+The V2 zImage and modules are built from one selected Linux source/configuration.
+The downloaded Release DTB is packaged only after it matches the source-built
+DTB byte-for-byte. The original Eunhasu uInitrd userspace is preserved, with
+its module tree rebuilt for the new kernel. This keeps the kernel, DTB and
+initramfs module tree aligned while retaining the existing Eunhasu boot logic.
 
 ## Deployment boundary
 
