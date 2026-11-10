@@ -101,7 +101,7 @@ Files:
 
 Boot asset strategy:
   - zImage is built by this V2 workflow.
-  - DTB is the byte-identical original Eunhasu Orange Pi PC DTB.
+  - DTB is built from the same Linux 6.2.15 source tree as zImage.
   - uInitrd retains original initramfs-tools scripts, udev, binaries and
     configuration. Only the old 6.18.35 module directory is replaced with
     this build's $KERNEL_RELEASE modules; depmod indexes are regenerated.
