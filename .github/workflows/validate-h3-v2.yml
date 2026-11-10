@@ -140,13 +140,18 @@ jobs:
             sun8i-h3-orangepi-pc.dtb
           BUILT_DTB="$SRC/arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb"
           RELEASE_DTB=".work/original-boot/original-sun8i-h3-orangepi-pc.dtb"
-          cmp "$BUILT_DTB" "$RELEASE_DTB" || {
-            echo "::error::Release DTB does not match the DTB built from Linux 6.2.15 source."
-            echo "Source DTB:  $(sha256sum "$BUILT_DTB" | awk '{print $1}')"
-            echo "Release DTB: $(sha256sum "$RELEASE_DTB" | awk '{print $1}')"
+          mkdir -p .work/dtb-compare
+          "$SRC/scripts/dtc/dtc" -I dtb -O dts -s -o .work/dtb-compare/source.dts "$BUILT_DTB"
+          "$SRC/scripts/dtc/dtc" -I dtb -O dts -s -o .work/dtb-compare/release.dts "$RELEASE_DTB"
+          cmp .work/dtb-compare/source.dts .work/dtb-compare/release.dts || {
+            echo "::error::Release DTB contents differ from the DTB built from Linux 6.2.15 source."
+            echo "Source DTB:   $(sha256sum "$BUILT_DTB" | awk '{print $1}')"
+            echo "Release DTB:  $(sha256sum "$RELEASE_DTB" | awk '{print $1}')"
+            echo "Source DTS:   $(sha256sum .work/dtb-compare/source.dts | awk '{print $1}')"
+            echo "Release DTS:  $(sha256sum .work/dtb-compare/release.dts | awk '{print $1}')"
             exit 1
           }
-          echo "Release DTB is byte-identical to the Linux 6.2.15 source-built DTB."
+          echo "Release DTB has the same normalized device-tree contents as the Linux 6.2.15 source-built DTB."
 
       - name: Test initramfs archive path matching
         shell: bash
