@@ -20,7 +20,7 @@ permissions:
 
 concurrency:
   group: rpi2b-kernel-v8-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -198,6 +198,8 @@ jobs:
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
           cp .config "$GITHUB_WORKSPACE/output-rpi2b-v8.config"
+          diff -u "$GITHUB_WORKSPACE/fedora-6.2.15-100-final.config" .config \
+            > "$GITHUB_WORKSPACE/v8-vs-fedora-config.diff" || true
 
           # Required ABI and release gates.
           for option in \
@@ -456,6 +458,7 @@ jobs:
             rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v8.tar.gz
             rpi2b-kernel-${{ env.EXPECTED_KERNEL_RELEASE }}-v8.tar.gz.sha256
             output-rpi2b-v8.config
+            v8-vs-fedora-config.diff
             fedora-6.2.15-100-final.config
             fedora-devel-rpm-identification.txt
             a20-kernel-devel-sha256.txt
