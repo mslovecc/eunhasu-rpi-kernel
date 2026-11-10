@@ -16,9 +16,20 @@ ACTUAL_RELEASE="$(make -s ARCH=arm kernelrelease)"
 }
 
 ZIMAGE="$SRC/arch/arm/boot/zImage"
+BUILT_DTB="$SRC/arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb"
 test -s "$ZIMAGE"
+test -s "$BUILT_DTB"
 test -s "$ORIGINAL_DTB"
 test -s "$ORIGINAL_UINITRD"
+
+# The Release DTB is used in the package only if it is byte-identical to
+# the DTB produced by this exact Linux source tree.
+if ! cmp -s "$BUILT_DTB" "$ORIGINAL_DTB"; then
+  echo "::error::Release DTB differs from the DTB built from Linux $KERNEL_RELEASE source."
+  echo "Built DTB:   $(sha256sum "$BUILT_DTB" | awk '{print $1}')"
+  echo "Release DTB: $(sha256sum "$ORIGINAL_DTB" | awk '{print $1}')"
+  exit 1
+fi
 test -s "$SRC/Module.symvers"
 test -s "$SRC/System.map"
 
@@ -76,7 +87,9 @@ MODULE_BYTES="$(du -sb "$MODULE_DIR" | awk '{print $1}')"
   echo "Orange Pi PC / H3 production package report"
   echo "Kernel release: $KERNEL_RELEASE"
   echo "zImage bytes: $(stat -c '%s' "$PKG/boot/zImage")"
-  echo "Built H3 DTB bytes: $(stat -c '%s' "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb")"
+  echo "Release DTB bytes (verified byte-identical to this source build): $(stat -c '%s' "$PKG/boot/dtb/allwinner/sun8i-h3-orangepi-pc.dtb")"
+  echo "Release DTB SHA256: $(sha256sum "$ORIGINAL_DTB" | awk '{print $1}')"
+  echo "Source-built DTB SHA256: $(sha256sum "$BUILT_DTB" | awk '{print $1}')" 
   echo "Rebuilt uInitrd bytes: $(stat -c '%s' "$PKG/boot/uInitrd")"
   echo "Installed module count: $MODULE_COUNT"
   echo "Installed module tree bytes: $MODULE_BYTES"
@@ -101,7 +114,9 @@ Files:
 
 Boot asset strategy:
   - zImage is built by this V2 workflow.
-  - DTB is built from the same Linux 6.2.15 source tree as zImage.
+  - DTB is downloaded from the 6.2.15 Release and must be byte-identical
+    to the DTB built from the same Linux source tree as zImage; otherwise
+    packaging stops.
   - uInitrd retains original initramfs-tools scripts, udev, binaries and
     configuration. Only the old 6.18.35 module directory is replaced with
     this build's $KERNEL_RELEASE modules; depmod indexes are regenerated.
