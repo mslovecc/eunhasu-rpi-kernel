@@ -100,7 +100,7 @@ jobs:
           FILES="$(wc -l < a20-kernel-devel-extracted-files.txt)"
           echo "Extracted regular files: $FILES"
           test "$FILES" -gt 1000
-          find .work/a20-devel -type f \\( -name Module.symvers -o -name System.map -o -name utsrelease.h -o -name autoconf.h -o -name .config \\) \
+          find .work/a20-devel -type f \( -name Module.symvers -o -name System.map -o -name utsrelease.h -o -name autoconf.h -o -name .config \) \
             | sort | tee a20-kernel-devel-key-files.txt
           SYMVERS="$(find .work/a20-devel -type f -name Module.symvers -print -quit)"
           test -n "$SYMVERS"
@@ -382,8 +382,8 @@ jobs:
           depmod -b "$PKG" "$KERNEL_RELEASE"
           test -s "$MODDIR/modules.dep"
           test -s "$MODDIR/modules.alias"
-          find "$MODDIR" -type f \\( -name 'dwc2.ko' -o -name 'dwc2.ko.xz' -o -name 'dwc2.ko.zst' \\) -print -quit | grep -q .
-          find "$MODDIR" -type f \\( -name 'smsc95xx.ko' -o -name 'smsc95xx.ko.xz' -o -name 'smsc95xx.ko.zst' \\) -print -quit | grep -q .
+          find "$MODDIR" -type f \( -name 'dwc2.ko' -o -name 'dwc2.ko.xz' -o -name 'dwc2.ko.zst' \) -print -quit | grep -q .
+          find "$MODDIR" -type f \( -name 'smsc95xx.ko' -o -name 'smsc95xx.ko.xz' -o -name 'smsc95xx.ko.zst' \) -print -quit | grep -q .
 
           # Verify that the selected DTB describes the Pi 2 LAN9514 USB topology.
           dtc -I dtb -O dts -o "$PKG/build-info/bcm2836-rpi-2-b.dts" "$PKG/boot/bcm2836-rpi-2-b.dtb"
