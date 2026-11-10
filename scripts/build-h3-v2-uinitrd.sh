@@ -86,7 +86,27 @@ grep -q 'Architecture:.*ARM' "$WORK/new-uinitrd-header.txt"
 dumpimage -p 0 -o "$WORK/check.gz" "$OUTPUT"
 gzip -t "$WORK/check.gz"
 gzip -dc "$WORK/check.gz" | cpio -it --quiet > "$WORK/new-file-list.txt"
-grep -qx 'init' "$WORK/new-file-list.txt"
+grep -Eq '^(\\./)?init
+grep -q "^usr/lib/modules/$KERNEL_RELEASE/" "$WORK/new-file-list.txt"
+
+KO="$(find "$NEW_MODULE_DIR" -type f -name '*.ko' -print -quit)"
+VM="$(modinfo -F vermagic "$KO" | xargs)"
+[[ "$VM" == "$KERNEL_RELEASE"* ]] || {
+  echo "::error::Initramfs module vermagic does not match kernel release: $VM"
+  exit 1
+}
+
+{
+  echo "Original uInitrd SHA256: $(sha256sum "$ORIGINAL" | awk '{print $1}')"
+  echo "New uInitrd SHA256: $(sha256sum "$OUTPUT" | awk '{print $1}')"
+  echo "Kernel release: $KERNEL_RELEASE"
+  echo "Module files in initramfs: $(find "$NEW_MODULE_DIR" -type f -name '*.ko' | wc -l | tr -d ' ')"
+  echo "Module tree size: $(du -sh "$NEW_MODULE_DIR" | awk '{print $1}')"
+  echo "Compressed initramfs payload: $(stat -c '%s' "$GZIP") bytes"
+  echo "U-Boot uInitrd: $(stat -c '%s' "$OUTPUT") bytes"
+  echo "Module vermagic sample: $VM"
+} | tee "$PKG/build-info/uinitrd-build-report.txt"
+ "$WORK/new-file-list.txt"
 grep -q "^usr/lib/modules/$KERNEL_RELEASE/" "$WORK/new-file-list.txt"
 
 KO="$(find "$NEW_MODULE_DIR" -type f -name '*.ko' -print -quit)"
