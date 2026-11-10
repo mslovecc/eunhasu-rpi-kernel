@@ -1,0 +1,347 @@
+name: Build RPi2B Fedora 36 kernel V10 (upstream RPi 6.2.16 + Diretta)
+
+"on":
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Parallel jobs (0 = auto)"
+        required: false
+        default: "0"
+        type: string
+  # Temporary one-time trigger; removed immediately after the run starts.
+  push:
+    branches:
+      - v10-rpi2b-bcm2709-fedora36-diretta
+    paths:
+      - config/v10-rpi2b-diretta.fragment
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpi2b-fedora36-v10-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    env:
+      RPI_LINUX_REPO: https://github.com/raspberrypi/linux.git
+      RPI_LINUX_BRANCH: rpi-6.2.y
+      RPI_LINUX_COMMIT: 4c7938b86db7dfccbfd4d2a840091cbb7fbf2e9f
+      EXPECTED_UPSTREAM_VERSION: "6.2.16"
+      SPOOFED_RELEASE: "6.2.15-215.fc36.armv7hl"
+      VERMAGIC_EXPECTED: "6.2.15-215.fc36.armv7hl SMP preempt mod_unload ARMv7 p2v8"
+      HARDWARE_CONFIG: "bcm2709_defconfig"
+      ABI_FRAGMENT: "config/v10-rpi2b-diretta.fragment"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build tools
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ca-certificates cpio             device-tree-compiler flex gcc-arm-linux-gnueabihf git kmod             libelf-dev libssl-dev make python3 rsync xz-utils gzip             binutils-arm-linux-gnueabihf
+          echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
+
+      - name: Fetch and pin Raspberry Pi Linux 6.2.16 source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git clone --filter=blob:none --no-checkout "$RPI_LINUX_REPO" .work/rpi-linux
+          git -C .work/rpi-linux fetch --depth=1 origin "$RPI_LINUX_COMMIT"
+          git -C .work/rpi-linux checkout --detach "$RPI_LINUX_COMMIT"
+          SRC="$GITHUB_WORKSPACE/.work/rpi-linux"
+          actual_commit="$(git -C "$SRC" rev-parse HEAD)"
+          [[ "$actual_commit" == "$RPI_LINUX_COMMIT" ]]
+          upstream_version="$(make -s -C "$SRC" ARCH=arm kernelversion)"
+          [[ "$upstream_version" == "$EXPECTED_UPSTREAM_VERSION" ]] || {
+            echo "::error::Pinned source version mismatch: $upstream_version"
+            exit 1
+          }
+          {
+            echo "Raspberry Pi Linux repository: $RPI_LINUX_REPO"
+            echo "Branch requested: $RPI_LINUX_BRANCH"
+            echo "Pinned commit: $actual_commit"
+            echo "Actual upstream source version: $upstream_version"
+            echo "Source Makefile SUBLEVEL before spoof: $(grep '^SUBLEVEL =' "$SRC/Makefile")"
+          } | tee "$GITHUB_WORKSPACE/v10-source-provenance.txt"
+          echo "SRC=$SRC" >> "$GITHUB_ENV"
+
+      - name: Validate original Diretta modules and extract ABI imports
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          for f in "$ABI_FRAGMENT" modules/diretta/SHA256SUMS             modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko             rpi-boot/config.txt rpi-boot/cmdline.txt; do
+            test -s "$f" || { echo "::error::Missing input: $f"; exit 1; }
+          done
+          (cd modules/diretta && sha256sum --check SHA256SUMS)
+          mkdir -p .work/diretta
+          for m in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            name="$(basename "$m")"
+            vm="$(modinfo -F vermagic "$m" | xargs)"
+            [[ "$vm" == "$VERMAGIC_EXPECTED" ]] || {
+              echo "::error::Unexpected original vermagic for $name: $vm"; exit 1;
+            }
+            readelf -h "$m" | grep -q 'Class:.*ELF32'
+            readelf -h "$m" | grep -q 'Machine:.*ARM'
+            arm-linux-gnueabihf-nm -u "$m" 2>/dev/null               | awk '$1=="U" {print $2}' | sort -u > ".work/diretta/$name.imports"
+            arm-linux-gnueabihf-nm -g --defined-only "$m" 2>/dev/null               | awk 'NF>=2 {print $NF}' | sort -u > ".work/diretta/$name.exports"
+          done
+          {
+            for n in alsa_bridge.ko diretta_direct.ko; do
+              echo "[$n undefined imports]"
+              cat ".work/diretta/$n.imports"
+              echo "[$n defined exports]"
+              cat ".work/diretta/$n.exports"
+            done
+          } > v10-diretta-module-symbols.txt
+
+      - name: Generate bcm2709_defconfig and apply Diretta ABI fragment
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cd "$SRC"
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" bcm2709_defconfig
+          bash scripts/kconfig/merge_config.sh -m -r .config "$GITHUB_WORKSPACE/$ABI_FRAGMENT"
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
+          make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
+
+          # Spoof only the release identity to match the existing module vermagic.
+          # The source provenance remains explicitly recorded as upstream 6.2.16.
+          sed -i -E 's/^SUBLEVEL = 16$/SUBLEVEL = 15/' Makefile
+          grep -qx 'SUBLEVEL = 15' <(grep '^SUBLEVEL =' Makefile)
+          release="$(make -s ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" kernelrelease)"
+          [[ "$release" == "$SPOOFED_RELEASE" ]] || {
+            echo "::error::Spoofed kernelrelease mismatch: $release"; exit 1;
+          }
+
+          require() {
+            grep -Fqx "$1" .config || {
+              echo "::error::Required config missing: $1"; exit 1;
+            }
+          }
+          for x in \
+            'CONFIG_LOCALVERSION="-215.fc36.armv7hl"' \
+            'CONFIG_ARCH_BCM2835=y' 'CONFIG_CPU_V7=y' 'CONFIG_AEABI=y' \
+            'CONFIG_ARM_PATCH_PHYS_VIRT=y' 'CONFIG_NEON=y' \
+            'CONFIG_KERNEL_MODE_NEON=y' 'CONFIG_SMP=y' 'CONFIG_PREEMPT=y' \
+            'CONFIG_MODULES=y' 'CONFIG_MODULE_UNLOAD=y' \
+            'CONFIG_HIGHMEM=y' 'CONFIG_HARDENED_USERCOPY=y' 'CONFIG_FORTIFY_SOURCE=y' \
+            'CONFIG_BLK_DEV_INITRD=y' 'CONFIG_DEVTMPFS=y' 'CONFIG_DEVTMPFS_MOUNT=y' \
+            'CONFIG_MSDOS_PARTITION=y' 'CONFIG_EXT4_FS=y' 'CONFIG_MMC=y' \
+            'CONFIG_MMC_BLOCK=y' 'CONFIG_MMC_BCM2835=y' \
+            'CONFIG_SERIAL_AMBA_PL011=y' 'CONFIG_SERIAL_AMBA_PL011_CONSOLE=y' \
+            '# CONFIG_MODVERSIONS is not set' '# CONFIG_THUMB2_KERNEL is not set' \
+            '# CONFIG_MODULE_SIG_FORCE is not set' '# CONFIG_LOCALVERSION_AUTO is not set'; do
+            require "$x"
+          done
+
+          for opt in USB_DWC2 USB_NET_SMSC95XX USB_USBNET USB_STORAGE SND_USB_AUDIO; do
+            grep -Eq "^CONFIG_$opt=(m|y)$" .config || {
+              echo "::error::Required RPi2 peripheral option missing: $opt"; exit 1;
+            }
+          done
+
+          # Fail if a force-signature setting survived Kconfig resolution.
+          if grep -Eq '^CONFIG_MODULE_SIG_FORCE=y$' .config; then
+            echo "::error::Forced module signatures are enabled"; exit 1
+          fi
+
+          cp .config "$GITHUB_WORKSPACE/v10-final.config"
+          diff -u arch/arm/configs/bcm2709_defconfig .config             > "$GITHUB_WORKSPACE/v10-vs-upstream-bcm2709.diff" || true
+          {
+            echo "Actual source: Linux $EXPECTED_UPSTREAM_VERSION"
+            echo "Spoofed release: $release"
+            echo "Hardware base: arch/arm/configs/bcm2709_defconfig"
+            echo "Diretta fragment: $ABI_FRAGMENT"
+            grep -E '^(CONFIG_(LOCALVERSION|ARCH_BCM2835|CPU_V7|AEABI|ARM_PATCH_PHYS_VIRT|NEON|KERNEL_MODE_NEON|SMP|PREEMPT|MODULES|MODULE_UNLOAD|HIGHMEM|HARDENED_USERCOPY|FORTIFY_SOURCE|BLK_DEV_INITRD|DEVTMPFS|DEVTMPFS_MOUNT|MSDOS_PARTITION|EXT4_FS|MMC|MMC_BLOCK|MMC_BCM2835|USB_DWC2|USB_NET_SMSC95XX|USB_USBNET|USB_STORAGE|SND|SND_PCM|SND_TIMER|SND_USB_AUDIO)=|# CONFIG_(MODVERSIONS|THUMB2_KERNEL|MODULE_SIG_FORCE|LOCALVERSION_AUTO) is not set)' .config || true
+          } > "$GITHUB_WORKSPACE/v10-config-audit.txt"
+          echo "KERNEL_RELEASE=$release" >> "$GITHUB_ENV"
+
+      - name: Build zImage, modules and Raspberry Pi 2B DTB
+        shell: bash
+        env:
+          BUILD_JOBS: ${{ inputs.jobs }}
+        run: |
+          set -Eeuo pipefail
+          jobs="$BUILD_JOBS"
+          [[ -n "$jobs" && "$jobs" != "0" ]] || jobs="$(nproc)"
+          [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || exit 1
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            -j"$jobs" zImage modules dtbs
+          test -s "$SRC/arch/arm/boot/zImage"
+          test -s "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb"
+          test -s "$SRC/Module.symvers"
+          test -s "$SRC/System.map"
+          readelf -h "$SRC/vmlinux" | grep -q 'Machine:.*ARM'
+          find "$SRC" -type f -name '*.ko' -print | sed "s#^$SRC/##" | sort \
+            > "$GITHUB_WORKSPACE/v10-module-inventory.txt"
+
+      - name: Enforce exact vermagic and complete Diretta symbol resolution
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sample="$(find "$SRC" -type f -name '*.ko' -print -quit)"
+          test -n "$sample"
+          built_vm="$(modinfo -F vermagic "$sample" | xargs)"
+          [[ "$built_vm" == "$VERMAGIC_EXPECTED" ]] || {
+            echo "::error::Built module vermagic mismatch: $built_vm"; exit 1;
+          }
+          grep -qx '# CONFIG_MODVERSIONS is not set' "$SRC/.config"
+
+          for sym in __check_object_size fortify_panic page_address; do
+            awk -v s="$sym" '$2==s && $1=="0x00000000" && $4=="EXPORT_SYMBOL" {ok=1} END{exit !ok}' \
+              "$SRC/Module.symvers" || {
+                echo "::error::Required zero-CRC EXPORT_SYMBOL missing: $sym"
+                grep -w "$sym" "$SRC/Module.symvers" || true
+                exit 1
+              }
+          done
+
+          # Resolve undefined imports against kernel exports AND the other
+          # original Diretta module's exported symbols (module-to-module refs).
+          cat .work/diretta/alsa_bridge.ko.exports .work/diretta/diretta_direct.ko.exports \
+            | sort -u > .work/diretta/both-module.exports
+          awk '{print $2}' "$SRC/Module.symvers" | sort -u > .work/diretta/kernel.exports
+          cat .work/diretta/kernel.exports .work/diretta/both-module.exports \
+            | sort -u > .work/diretta/all.exports
+          missing_total=0
+          for name in alsa_bridge.ko diretta_direct.ko; do
+            missing=".work/diretta/$name.missing"
+            comm -23 ".work/diretta/$name.imports" .work/diretta/all.exports > "$missing"
+            count="$(wc -l < "$missing")"
+            missing_total=$((missing_total + count))
+            echo "$name imports=$(wc -l < ".work/diretta/$name.imports"), unresolved=$count"
+            if [[ "$count" -gt 0 ]]; then cat "$missing"; fi
+          done
+          [[ "$missing_total" -eq 0 ]] || {
+            echo "::error::One or more original Diretta imports are unresolved."; exit 1;
+          }
+
+          {
+            echo "Source tree: Raspberry Pi Linux $EXPECTED_UPSTREAM_VERSION"
+            echo "Spoofed release: $KERNEL_RELEASE"
+            echo "Expected original module vermagic: $VERMAGIC_EXPECTED"
+            echo "Built module vermagic: $built_vm"
+            echo "CONFIG_MODVERSIONS: disabled"
+            echo "CONFIG_MODULE_SIG_FORCE: disabled"
+            echo
+            echo "Required zero-CRC exports:"
+            for sym in __check_object_size fortify_panic page_address; do
+              awk -v s="$sym" '$2==s {print}' "$SRC/Module.symvers"
+            done
+            echo
+            echo "All undefined imports resolved by kernel exports or the two original modules."
+          } | tee "$GITHUB_WORKSPACE/v10-diretta-compatibility-report.txt"
+
+      - name: Package kernel7.img, initramfs7, DTB and complete modules
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PKG="$GITHUB_WORKSPACE/package"
+          MODDIR="$PKG/lib/modules/$KERNEL_RELEASE"
+          INITROOT="$GITHUB_WORKSPACE/.work/initramfs-root"
+          mkdir -p "$PKG/boot" "$PKG/build-info" "$MODDIR/extra/diretta" \
+            "$INITROOT/usr/lib/modules"
+          install -m 0644 "$SRC/arch/arm/boot/zImage" "$PKG/boot/kernel7.img"
+          install -m 0644 "$SRC/arch/arm/boot/dts/bcm2836-rpi-2-b.dtb" \
+            "$PKG/boot/bcm2836-rpi-2-b.dtb"
+          make -C "$SRC" ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" \
+            INSTALL_MOD_PATH="$PKG" modules_install
+          rm -f "$MODDIR/build" "$MODDIR/source"
+          install -m 0644 modules/diretta/alsa_bridge.ko "$MODDIR/extra/diretta/"
+          install -m 0644 modules/diretta/diretta_direct.ko "$MODDIR/extra/diretta/"
+          depmod -b "$PKG" "$KERNEL_RELEASE"
+
+          cp -a "$MODDIR" "$INITROOT/usr/lib/modules/$KERNEL_RELEASE"
+          (cd "$INITROOT" && find . -print0 | LC_ALL=C sort -z \
+            | cpio --null --create --format=newc --owner=0:0) \
+            | gzip -1n > "$PKG/boot/initramfs7"
+          gzip -t "$PKG/boot/initramfs7"
+          gzip -dc "$PKG/boot/initramfs7" | cpio -it \
+            > "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "usr/lib/modules/$KERNEL_RELEASE/" "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "extra/diretta/alsa_bridge.ko" "$PKG/build-info/initramfs7.contents.txt"
+          grep -Fq "extra/diretta/diretta_direct.ko" "$PKG/build-info/initramfs7.contents.txt"
+
+          python3 - rpi-boot/config.txt "$PKG/boot/config.txt" <<'PY'
+          import sys
+          from pathlib import Path
+          src, dst = map(Path, sys.argv[1:])
+          lines = src.read_text().splitlines()
+          out = []
+          for line in lines:
+              s = line.strip()
+              if s.startswith(("kernel=", "device_tree=", "initramfs ", "auto_initramfs=")):
+                  continue
+              out.append(line)
+          out += ["", "[all]", "kernel=kernel7.img",
+                  "device_tree=bcm2836-rpi-2-b.dtb", "auto_initramfs=0",
+                  "initramfs initramfs7 followkernel", ""]
+          dst.write_text("\n".join(out))
+          PY
+          install -m 0644 rpi-boot/cmdline.txt "$PKG/boot/cmdline.txt"
+
+          install -m 0644 "$SRC/.config" "$PKG/build-info/v10-final.config"
+          install -m 0644 "$SRC/Module.symvers" "$PKG/build-info/Module.symvers"
+          install -m 0644 "$SRC/System.map" "$PKG/build-info/System.map"
+          install -m 0644 "$SRC/vmlinux" "$PKG/build-info/vmlinux"
+          install -m 0644 "$SRC/arch/arm/configs/bcm2709_defconfig" "$PKG/build-info/"
+          install -m 0644 "$ABI_FRAGMENT" "$PKG/build-info/"
+          for f in v10-source-provenance.txt v10-config-audit.txt \
+            v10-module-inventory.txt v10-diretta-module-symbols.txt \
+            v10-diretta-compatibility-report.txt; do
+            install -m 0644 "$GITHUB_WORKSPACE/$f" "$PKG/build-info/"
+          done
+
+          cat > "$PKG/README.txt" <<EOF
+          Raspberry Pi 2B Fedora 36 / Diretta kernel V10
+          Actual source: Raspberry Pi linux rpi-6.2.y, Linux 6.2.16
+          Source commit: $RPI_LINUX_COMMIT
+          Spoofed kernel release: $KERNEL_RELEASE
+          Hardware config: upstream arch/arm/configs/bcm2709_defconfig
+
+          Boot files: kernel7.img, initramfs7, bcm2836-rpi-2-b.dtb,
+          config.txt and cmdline.txt.
+          Modules: lib/modules/$KERNEL_RELEASE/
+          Original Diretta modules are copied unchanged under extra/diretta/.
+
+          IMPORTANT: source code is 6.2.16 while release/vermagic is spoofed
+          to 6.2.15-215.fc36.armv7hl. Matching vermagic and exported symbol
+          names does not prove private structure ABI compatibility.
+          Back up the SD card and test on the Raspberry Pi 2B before use.
+          EOF
+
+          (cd "$PKG" && find boot lib -type f -print0 | sort -z | xargs -0 sha256sum) \
+            > "$PKG/build-info/PACKAGE-SHA256SUMS.txt"
+          cd "$GITHUB_WORKSPACE"
+          tar -czf "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v10.tar.gz" package
+          sha256sum "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v10.tar.gz" \
+            > "rpi2b-fedora36-kernel-$KERNEL_RELEASE-v10.tar.gz.sha256"
+
+      - name: Upload V10 artifact and audit reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi2b-fedora36-kernel-${{ env.SPOOFED_RELEASE }}-v10
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            rpi2b-fedora36-kernel-${{ env.SPOOFED_RELEASE }}-v10.tar.gz
+            rpi2b-fedora36-kernel-${{ env.SPOOFED_RELEASE }}-v10.tar.gz.sha256
+            v10-final.config
+            v10-vs-upstream-bcm2709.diff
+            v10-config-audit.txt
+            v10-module-inventory.txt
+            v10-source-provenance.txt
+            v10-diretta-module-symbols.txt
+            v10-diretta-compatibility-report.txt
+            package/README.txt
+            package/boot/**
+            package/build-info/**
