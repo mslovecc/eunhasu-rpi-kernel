@@ -137,7 +137,7 @@ jobs:
           install -m 0644 sources/kernel-srpm/Makefile.rhelver "$SRC/Makefile.rhelver"
           bash scripts/prepare-h3-v2-config.sh "$SRC" "6.2.15-215.fc36.armv7hl"
           make -C "$SRC" -j2 ARCH=arm CROSS_COMPILE=arm-linux-gnueabihf- \
-            arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb
+            sun8i-h3-orangepi-pc.dtb
           BUILT_DTB="$SRC/arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb"
           RELEASE_DTB=".work/original-boot/original-sun8i-h3-orangepi-pc.dtb"
           cmp "$BUILT_DTB" "$RELEASE_DTB" || {
