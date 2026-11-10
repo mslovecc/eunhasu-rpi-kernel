@@ -9,22 +9,14 @@ on:
         default: "0"
         type: string
       original_uinitrd_url:
-        description: "HTTPS URL of the verified original Eunhasu uInitrd release asset"
-        required: true
+        description: "Verified Eunhasu uInitrd from release 6.2.15"
+        required: false
+        default: "https://github.com/mslovecc/eunhasu-rpi-kernel/releases/download/6.2.15/uInitrd"
         type: string
       original_uinitrd_sha256:
         description: "SHA256 of original uInitrd"
-        required: true
+        required: false
         default: "7273d8d0868402c31f2aa380304c5d67bd6183028d193624a72dbea46b1cddbe"
-        type: string
-      original_dtb_url:
-        description: "HTTPS URL of the verified original Orange Pi PC DTB release asset"
-        required: true
-        type: string
-      original_dtb_sha256:
-        description: "SHA256 of original Orange Pi PC DTB"
-        required: true
-        default: "fd66f85a2543fe133fa2b884c834c88154b82700368c8e92616b78d3105fa9c2"
         type: string
 
 permissions:
@@ -126,20 +118,16 @@ jobs:
           done
 
 
-      - name: Download and verify original Eunhasu uInitrd and Orange Pi PC DTB
+      - name: Download and verify original Eunhasu uInitrd
         shell: bash
         env:
           ORIGINAL_UINITRD_URL: ${{ inputs.original_uinitrd_url }}
           ORIGINAL_UINITRD_SHA256: ${{ inputs.original_uinitrd_sha256 }}
-          ORIGINAL_DTB_URL: ${{ inputs.original_dtb_url }}
-          ORIGINAL_DTB_SHA256: ${{ inputs.original_dtb_sha256 }}
         run: |
           set -Eeuo pipefail
           bash scripts/download-h3-v2-boot-assets.sh \
-            "$ORIGINAL_UINITRD_URL" "$ORIGINAL_UINITRD_SHA256" \
-            "$ORIGINAL_DTB_URL" "$ORIGINAL_DTB_SHA256"
+            "$ORIGINAL_UINITRD_URL" "$ORIGINAL_UINITRD_SHA256"
           echo "ORIGINAL_UINITRD=$GITHUB_WORKSPACE/.work/original-boot/original-uInitrd" >> "$GITHUB_ENV"
-          echo "ORIGINAL_DTB=$GITHUB_WORKSPACE/.work/original-boot/original-sun8i-h3-orangepi-pc.dtb" >> "$GITHUB_ENV"
 
       - name: Download Linux source and Fedora SRPM from GitHub Release (fallback mirror enabled)
         shell: bash
@@ -229,6 +217,7 @@ jobs:
 
           file arch/arm/boot/zImage \
             arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb
+          echo "ORIGINAL_DTB=$SRC/arch/arm/boot/dts/sun8i-h3-orangepi-pc.dtb" >> "$GITHUB_ENV"
 
       - name: Install modules, audit Diretta ABI and package V2
         shell: bash
