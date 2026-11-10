@@ -212,6 +212,11 @@ jobs:
           # alsa_bridge imports page_address(); ARM only provides the exported
           # page-address implementation when HIGHMEM support is selected.
           grep -qx 'CONFIG_HIGHMEM=y' .config
+          # The struct module size gate requires DWARF4 type data in vmlinux.
+          grep -qx 'CONFIG_DEBUG_INFO=y' .config
+          grep -qx 'CONFIG_DEBUG_INFO_DWARF4=y' .config
+          grep -qx '# CONFIG_DEBUG_INFO_REDUCED is not set' .config
+          grep -qx '# CONFIG_DEBUG_INFO_SPLIT is not set' .config
           grep -qx '# CONFIG_MODVERSIONS is not set' .config
           # MODULE_SIG_FORCE is not a guaranteed Kconfig symbol in this
           # Raspberry Pi kernel tree. Do not make its textual presence a gate:
