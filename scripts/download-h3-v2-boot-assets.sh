@@ -66,5 +66,7 @@ grep -q '^usr/lib/modules/6\.18\.35-current-sunxi/' "$OUT/original-initramfs-fil
   echo "DTB model: $MODEL"
   echo "DTB compatible: $COMPAT"
   echo "Original initramfs entries: $(wc -l < "$OUT/original-initramfs-file-list.txt" | tr -d ' ')"
-  echo "Original initramfs module files: $(grep -c '\\.ko$' "$OUT/original-initramfs-file-list.txt" || true)"
+  echo "Original initramfs module files: $(grep -c '\.ko "$OUT/original-initramfs-file-list.txt" || true)"
+} | tee "$OUT/original-boot-assets-report.txt"
+ "$OUT/original-initramfs-file-list.txt" || true)"
 } | tee "$OUT/original-boot-assets-report.txt"
