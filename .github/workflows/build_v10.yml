@@ -8,6 +8,12 @@ name: Build RPi2B Fedora 36 kernel V10 (upstream RPi 6.2.16 + Diretta)
         required: false
         default: "0"
         type: string
+  # Run V10 automatically when this workflow file is updated on main.
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build_v10.yml
 
 permissions:
   contents: read
@@ -36,12 +42,92 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install build tools
+      - name: Install build tools (mirror + retry + official fallback)
         shell: bash
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           set -Eeuo pipefail
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ca-certificates cpio             device-tree-compiler flex gcc-arm-linux-gnueabihf git kmod             libelf-dev libssl-dev make python3 rsync xz-utils gzip             binutils-arm-linux-gnueabihf
+
+          # GitHub ubuntu-24.04 uses deb822 sources. Move only the main Ubuntu
+          # archive to a fast public mirror; keep security.ubuntu.com unchanged.
+          # If the mirror is unavailable or out of sync, restore the runner's
+          # original source file and fall back to the official archive.
+          SOURCE_FILE="/etc/apt/sources.list.d/ubuntu.sources"
+          SOURCE_BACKUP="$RUNNER_TEMP/ubuntu.sources.original"
+          if [[ -f "$SOURCE_FILE" ]]; then
+            sudo cp -a "$SOURCE_FILE" "$SOURCE_BACKUP"
+            sudo sed -i \
+              -e 's|https\?://azure.archive.ubuntu.com/ubuntu/?|https://mirrors.edge.kernel.org/ubuntu/|g' \
+              -e 's|https\?://archive.ubuntu.com/ubuntu/?|https://mirrors.edge.kernel.org/ubuntu/|g' \
+              "$SOURCE_FILE"
+          else
+            echo "::warning::Deb822 ubuntu.sources not found; keeping runner-provided APT sources."
+          fi
+
+          # Bound stalled connections and retry transient CDN/network errors.
+          sudo tee /etc/apt/apt.conf.d/80github-actions-retries >/dev/null <<'APTCONF'
+          Acquire::Retries "5";
+          Acquire::http::Timeout "30";
+          Acquire::https::Timeout "30";
+          Acquire::Queue-Mode "host";
+          APTCONF
+
+          apt_update() {
+            local attempt
+            for attempt in 1 2 3; do
+              echo "APT index update attempt $attempt/3"
+              if sudo apt-get -o Acquire::Retries=5 update; then
+                return 0
+              fi
+              sleep "$((attempt * 5))"
+            done
+            return 1
+          }
+
+          if ! apt_update; then
+            if [[ -f "$SOURCE_BACKUP" ]]; then
+              echo "::warning::Mirror update failed; restoring original Ubuntu sources."
+              sudo cp -a "$SOURCE_BACKUP" "$SOURCE_FILE"
+              apt_update || {
+                echo "::error::APT update failed with both mirror and official sources."
+                exit 1
+              }
+            else
+              echo "::error::APT update failed."
+              exit 1
+            fi
+          fi
+
+          packages=(
+            bc bison build-essential ca-certificates cpio
+            device-tree-compiler flex gcc-arm-linux-gnueabihf git kmod
+            libelf-dev libssl-dev make python3 rsync xz-utils gzip
+            binutils-arm-linux-gnueabihf
+          )
+
+          installed=0
+          for attempt in 1 2 3; do
+            echo "Build-tools installation attempt $attempt/3"
+            if sudo apt-get -o Acquire::Retries=5 install -y --no-install-recommends "${packages[@]}"; then
+              installed=1
+              break
+            fi
+            sleep "$((attempt * 5))"
+          done
+          [[ "$installed" -eq 1 ]] || {
+            echo "::error::Unable to install one or more build dependencies after 3 attempts."
+            exit 1
+          }
+
+          # Fail early with a concise toolchain check rather than during make.
+          for tool in arm-linux-gnueabihf-gcc make bc bison flex dtc; do
+            command -v "$tool" >/dev/null || {
+              echo "::error::Required build tool not found after installation: $tool"
+              exit 1
+            }
+          done
+          arm-linux-gnueabihf-gcc --version | head -n 1
           echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
 
       - name: Fetch and pin Raspberry Pi Linux 6.2.16 source
