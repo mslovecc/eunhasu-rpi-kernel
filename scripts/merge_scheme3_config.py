@@ -7,7 +7,7 @@ from pathlib import Path
 ACTIVE = re.compile(r'^CONFIG_([A-Z0-9_]+)=(.*)$')
 UNSET = re.compile(r'^# CONFIG_([A-Z0-9_]+) is not set$')
 ALLWINNER = re.compile(
-    r'^(ARCH_SUNXI|MACH_SUN[0-9]+I|SUNXI|SUN[0-9]+I|AXP[0-9A-Z_]*|'
+    r'^(ARCH_SUNXI|MACH_SUN[0-9]+I|SUNXI.*|SUN[0-9]+I.*|AXP[0-9A-Z_]*|'
     r'ALLWINNER|MFD_AXP|REGULATOR_AXP|POWER_RESET_SUNXI|PINCTRL_SUNXI|'
     r'I2C_SUN[0-9A-Z_]*|SPI_SUN[0-9A-Z_]*|MMC_SUN[0-9A-Z_]*|'
     r'RTC_DRV_SUN[0-9A-Z_]*|PWM_SUN[0-9A-Z_]*|THERMAL_SUN[0-9A-Z_]*)'
