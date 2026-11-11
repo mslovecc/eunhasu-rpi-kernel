@@ -589,7 +589,7 @@ jobs:
 
           Scheme 3 keeps Fedora Linux 6.2.15 as its base and selectively backports
           Raspberry Pi USB DWCOTG/FIQ and firmware/clock initialization support.
-          USB DWCOTG, USB networking, SMSC95XX and USB storage are built in.
+          USB DWCOTG is built in. USB networking, SMSC95XX, USB storage and ALSA retain the A20 baseline module/built-in selections; installed modules are included in initramfs7.
 
           The available SRPM is 6.2.15-100.fc36; the required target release
           string is -215 to match the original modules. This is not proof that
