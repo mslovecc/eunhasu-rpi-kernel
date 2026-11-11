@@ -48,15 +48,71 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install build tools
+      - name: Install only missing build tools (avoid slow Azure APT mirror)
         shell: bash
+        timeout-minutes: 12
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           set -Eeuo pipefail
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ca-certificates cpio curl \
-            device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf git kmod \
-            libelf-dev libssl-dev make patch python3 rpm rsync xz-utils gzip \
+
+          # GitHub ubuntu-24.04 images already contain many kernel build
+          # dependencies. Check package state first; don't run apt update
+          # unless a required package is genuinely absent.
+          packages=(
+            bc bison build-essential ca-certificates cpio curl
+            device-tree-compiler dwarves flex gcc-arm-linux-gnueabihf git kmod
+            libelf-dev libssl-dev make patch python3 rpm rsync xz-utils gzip
             binutils-arm-linux-gnueabihf
+          )
+          missing=()
+          for package in "${packages[@]}"; do
+            status="$(dpkg-query -W -f='${db:Status-Status}' "$package" 2>/dev/null || true)"
+            if [[ "$status" != "installed" ]]; then
+              missing+=("$package")
+            fi
+          done
+
+          if (( ${#missing[@]} > 0 )); then
+            echo "Missing packages: ${missing[*]}"
+            # Ubuntu 24.04 may route APT through the slow Azure mirror list.
+            # Remove that endpoint while retaining normal Ubuntu sources.
+            MIRROR_LIST=/etc/apt/apt-mirrors.txt
+            if [[ -f "$MIRROR_LIST" ]]; then
+              sudo cp -a "$MIRROR_LIST" "$RUNNER_TEMP/apt-mirrors.original"
+              sudo sed -i '/azure\.archive\.ubuntu\.com/d' "$MIRROR_LIST"
+              cat "$MIRROR_LIST"
+            fi
+            sudo apt-get -o Acquire::Retries=1 \
+              -o Acquire::http::Timeout=20 \
+              -o Acquire::https::Timeout=20 update
+            sudo apt-get -o Acquire::Retries=2 install -y \
+              --no-install-recommends "${missing[@]}"
+          else
+            echo "All required Debian packages are installed; skipping APT update/install."
+          fi
+
+          # Verify commands used by later steps, including non-obvious
+          # package-to-command mappings such as rpm2cpio and pahole.
+          for tool in \
+            arm-linux-gnueabihf-gcc arm-linux-gnueabihf-nm \
+            make bc bison flex dtc cpio depmod modinfo \
+            git python3 rsync gzip curl rpm rpm2cpio patch \
+            readelf ar pahole; do
+            command -v "$tool" >/dev/null || {
+              echo "::error::Required build tool not found: $tool"
+              exit 1
+            }
+          done
+          test -f /usr/include/openssl/ssl.h || {
+            echo "::error::OpenSSL development headers are missing."
+            exit 1
+          }
+          test -f /usr/include/elf.h || {
+            echo "::error::ELF development headers are missing."
+            exit 1
+          }
+          arm-linux-gnueabihf-gcc --version | head -n 1
           echo "CROSS_COMPILE=arm-linux-gnueabihf-" >> "$GITHUB_ENV"
 
       - name: Validate inputs and original modules
