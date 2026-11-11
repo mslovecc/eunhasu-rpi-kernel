@@ -42,16 +42,16 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install only missing build tools
+      - name: Install only missing build tools (skip slow Azure APT mirror)
         shell: bash
+        timeout-minutes: 8
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -Eeuo pipefail
 
-          # GitHub's ubuntu-24.04 image already contains many common build tools.
-          # Detect installed Debian packages first; do not refresh APT or reinstall
-          # anything unless a required package is genuinely absent.
+          # Detect packages first. Most common tools are already on the
+          # GitHub ubuntu-24.04 image, so avoid APT entirely when possible.
           packages=(
             bc bison build-essential ca-certificates cpio
             device-tree-compiler flex gcc-arm-linux-gnueabihf git kmod
@@ -68,20 +68,31 @@ jobs:
           done
 
           if (( ${#missing[@]} > 0 )); then
-            echo "Packages not present on runner: ${missing[*]}"
-            # Keep the runner's native Ubuntu sources. Updating a third-party
-            # mirror on every run was adding latency and another failure point.
-            sudo apt-get -o Acquire::Retries=3 \
+            echo "Missing packages: ${missing[*]}"
+
+            # Ubuntu 24.04 GitHub runners use mirror+file:/etc/apt/apt-mirrors.txt.
+            # Editing ubuntu.sources does not change the selected Azure mirror.
+            # Remove the slow Azure entry so APT uses archive.ubuntu.com instead.
+            MIRROR_LIST=/etc/apt/apt-mirrors.txt
+            if [[ -f "$MIRROR_LIST" ]]; then
+              sudo cp -a "$MIRROR_LIST" "$RUNNER_TEMP/apt-mirrors.original"
+              sudo sed -i '/azure\.archive\.ubuntu\.com/d' "$MIRROR_LIST"
+              echo "APT mirror list after removing the slow Azure endpoint:"
+              cat "$MIRROR_LIST"
+            else
+              echo "::warning::APT mirror list not found; using runner-configured sources."
+            fi
+
+            sudo apt-get -o Acquire::Retries=1 \
               -o Acquire::http::Timeout=20 \
               -o Acquire::https::Timeout=20 update
 
-            sudo apt-get -o Acquire::Retries=3 install -y \
+            sudo apt-get -o Acquire::Retries=2 install -y \
               --no-install-recommends "${missing[@]}"
           else
-            echo "All required Debian packages are already installed; skipping APT."
+            echo "All required Debian packages are installed; skipping APT update and install."
           fi
 
-          # Verify the actual executables and libraries needed by this build.
           for tool in \
             arm-linux-gnueabihf-gcc arm-linux-gnueabihf-nm \
             make bc bison flex dtc cpio depmod modinfo \
