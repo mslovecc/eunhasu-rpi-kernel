@@ -83,10 +83,16 @@ def main():
         if not m:
             continue
         key, value = m.groups()
-        if key in a20_active:
+        if key in a20_active and key != "MMC_BLOCK":
             if a20_active[key] != value:
                 boot_conflicts.append(f"CONFIG_{key}: A20={a20_active[key]} BOOT={value}; kept A20")
             continue
+        if key == "MMC_BLOCK" and key in a20_active and a20_active[key] != value:
+            boot_conflicts.append(
+                f"CONFIG_{key}: A20={a20_active[key]} BOOT={value}; "
+                "overridden because the root SD block driver must be built-in "
+                "when initramfs has no /init"
+            )
         boot_lines.append(line)
     filtered_boot = src / ".scheme3-rpi2b-boot.fragment"
     filtered_boot.write_text("\n".join(boot_lines) + "\n")
