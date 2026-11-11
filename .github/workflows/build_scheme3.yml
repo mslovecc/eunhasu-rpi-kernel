@@ -326,10 +326,10 @@ jobs:
                   output.append(f"# CONFIG_{m.group(1)} is not set")
               else:
                   output.append(line)
-          cfg.write_text("\\n".join(output) + "\\n")
+          cfg.write_text("\n".join(output) + "\n")
           Path("scheme3-pruned-driver-report.txt").write_text(
-              "Disabled unrelated non-RPi2 drivers from the BCM2709 full defconfig:\\n"
-              + ("\\n".join(removed) if removed else "(none)") + "\\n"
+              "Disabled unrelated non-RPi2 drivers from the BCM2709 full defconfig:\n"
+              + ("\n".join(removed) if removed else "(none)") + "\n"
           )
           print(Path("scheme3-pruned-driver-report.txt").read_text())
           PY
@@ -449,7 +449,7 @@ jobs:
               END { exit !found }
             ' <<< "$members"; then
               echo "::error::Expected archive member $member missing from $archive"
-              printf '%s\\n' "$members"
+              printf '%s\n' "$members"
               return 1
             fi
           }
