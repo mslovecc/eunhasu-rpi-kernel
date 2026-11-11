@@ -297,6 +297,43 @@ jobs:
             --source "$SRC" \
             --report "$GITHUB_WORKSPACE/scheme3-config-merge-report.txt"
 
+          # The BCM2709 defconfig is a complete distro-style config, not a
+          # minimal hardware overlay. Prune unrelated driver families after
+          # merging it, while retaining A20 audio/network choices and Pi drivers.
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          cfg = Path(".config")
+          lines = cfg.read_text().splitlines()
+          forbidden = re.compile(
+              r"^(?:"
+              r"DRM_(?:AMDGPU|NOUVEAU|RADEON|I915|XE|GMA500|VMWGFX|VBOXVIDEO|QXL|BOCHS|VIRTIO_GPU)|"
+              r"BLK_DEV_NVME|NVME_[A-Z0-9_]+|"
+              r"SCSI_MPI3MR|SCSI_QLA_FC|SCSI_QLOGIC_1280|SCSI_HPSA|MEGARAID_SAS|"
+              r"MPT2SAS|MPT3SAS|SMARTPQI|SCSI_ISCI|MMC_SDHCI_IPROC|USB_LAN78XX)$"
+          )
+          vendor = re.compile(
+              r"^(?:INTEL|AMD|NVIDIA|DELL|HP|ACER|ASUS|LENOVO|THINKPAD|APPLE)_[A-Z0-9_]+$"
+          )
+          arch = re.compile(r"^X86(?:_[A-Z0-9_]+)?$")
+          removed = []
+          output = []
+          for line in lines:
+              m = re.match(r"^CONFIG_([A-Z0-9_]+)=(?:y|m)$", line)
+              if m and (forbidden.fullmatch(m.group(1)) or vendor.fullmatch(m.group(1)) or arch.fullmatch(m.group(1))):
+                  removed.append(line)
+                  output.append(f"# CONFIG_{m.group(1)} is not set")
+              else:
+                  output.append(line)
+          cfg.write_text("\\n".join(output) + "\\n")
+          Path("scheme3-pruned-driver-report.txt").write_text(
+              "Disabled unrelated non-RPi2 drivers from the BCM2709 full defconfig:\\n"
+              + ("\\n".join(removed) if removed else "(none)") + "\\n"
+          )
+          print(Path("scheme3-pruned-driver-report.txt").read_text())
+          PY
+
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" olddefconfig
           make ARCH=arm CROSS_COMPILE="$CROSS_COMPILE" syncconfig
           cp .config "$GITHUB_WORKSPACE/output-scheme3-rpi2b.config"
