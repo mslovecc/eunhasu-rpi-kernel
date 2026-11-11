@@ -201,6 +201,7 @@ jobs:
             drivers/irqchip/irq-bcm2835.c \
             drivers/mailbox/bcm2835-mailbox.c \
             drivers/firmware/raspberrypi.c \
+            include/soc/bcm2835/raspberrypi-firmware.h \
             drivers/clk/bcm/clk-bcm2835.c \
             drivers/usb/Makefile \
             drivers/usb/host/Kconfig \
@@ -220,6 +221,7 @@ jobs:
             drivers/irqchip/irq-bcm2835.c \
             drivers/mailbox/bcm2835-mailbox.c \
             drivers/firmware/raspberrypi.c \
+            include/soc/bcm2835/raspberrypi-firmware.h \
             drivers/clk/bcm/clk-bcm2835.c \
             drivers/usb/Makefile \
             drivers/usb/host/Kconfig \
@@ -238,6 +240,13 @@ jobs:
           grep -q 'config USB_DWCOTG' "$SRC/drivers/usb/host/Kconfig"
           grep -q 'select FIQ' "$SRC/arch/arm/mach-bcm/Kconfig"
           grep -q 'arch_initcall(bcm2835_mbox_init)' "$SRC/drivers/mailbox/bcm2835-mailbox.c"
+          test -s "$SRC/include/soc/bcm2835/raspberrypi-firmware.h"
+          for tag in RPI_FIRMWARE_SET_REBOOT_FLAGS RPI_FIRMWARE_GET_FIRMWARE_VARIANT RPI_FIRMWARE_GET_FIRMWARE_HASH; do
+            grep -q "$tag" "$SRC/include/soc/bcm2835/raspberrypi-firmware.h" || {
+              echo "::error::Raspberry Pi firmware header is missing required tag: $tag"
+              exit 1
+            }
+          done
           grep -q 'core_initcall(rpi_firmware_init)' "$SRC/drivers/firmware/raspberrypi.c"
           grep -q 'postcore_initcall(__bcm2835_clk_driver_init)' "$SRC/drivers/clk/bcm/clk-bcm2835.c"
 
