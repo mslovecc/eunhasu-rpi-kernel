@@ -90,7 +90,7 @@ jobs:
               > ".work/diretta/$name.imports"
             # Record only ELF symbols exposed through the kernel module export table.
             arm-linux-gnueabihf-nm -g --defined-only "$m" 2>/dev/null \
-              | awk '$NF ~ /^__ksymtab_/ {sub(/^__ksymtab_/, "", $NF); print $NF}' \
+              | awk '$NF ~ /^__ksymtab_(gpl_)?[A-Za-z_][A-Za-z0-9_]*$/ {sub(/^__ksymtab_(gpl_)?/, "", $NF); print $NF}' \
               | sort -u > ".work/diretta/$name.exports"
           done
           comm -12 .work/diretta/alsa_bridge.ko.imports .work/diretta/diretta_direct.ko.exports \
