@@ -372,16 +372,28 @@ jobs:
           # These Raspberry Pi USB drivers are directory-built into built-in.a.
           # Do not test for non-existent aggregate *.o names.
           require_archive_member() {
-            local archive="$1" member="$2"
+            local archive="$1" member="$2" members
             test -s "$archive" || {
               echo "::error::Expected built-in archive missing: $archive"
               return 1
             }
-            ar t "$archive" | grep -Fxq "$member" || {
-              echo "::error::Expected object $member missing from $archive"
-              ar t "$archive" || true
+
+            # Kbuild's thin archives may print full object paths from "ar t",
+            # rather than only basenames. Compare the final path component.
+            # Capture the listing first: grep -q in a pipe can close early and
+            # trigger SIGPIPE under this job's pipefail setting.
+            members="$(ar t "$archive")" || {
+              echo "::error::Unable to list archive: $archive"
               return 1
             }
+            if ! printf '%s\\n' "$members" | awk -F/ -v expected="$member" '
+              $NF == expected { found=1 }
+              END { exit !found }
+            '; then
+              echo "::error::Expected archive member $member missing from $archive"
+              printf '%s\\n' "$members"
+              return 1
+            fi
           }
           require_file() {
             test -s "$1" || {
