@@ -58,8 +58,8 @@ jobs:
           if [[ -f "$SOURCE_FILE" ]]; then
             sudo cp -a "$SOURCE_FILE" "$SOURCE_BACKUP"
             sudo sed -i \
-              -e 's|https\?://azure.archive.ubuntu.com/ubuntu/?|https://mirrors.edge.kernel.org/ubuntu/|g' \
-              -e 's|https\?://archive.ubuntu.com/ubuntu/?|https://mirrors.edge.kernel.org/ubuntu/|g' \
+              -e 's|azure.archive.ubuntu.com|mirrors.edge.kernel.org|g' \
+              -e 's|archive.ubuntu.com|mirrors.edge.kernel.org|g' \
               "$SOURCE_FILE"
           else
             echo "::warning::Deb822 ubuntu.sources not found; keeping runner-provided APT sources."
