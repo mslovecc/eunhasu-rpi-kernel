@@ -84,10 +84,19 @@ jobs:
           done
           mkdir -p .work/diretta
           for m in modules/diretta/alsa_bridge.ko modules/diretta/diretta_direct.ko; do
+            name="$(basename "$m")"
             arm-linux-gnueabihf-nm -u "$m" 2>/dev/null \
               | awk '$1=="U" {print $2}' | sort -u \
-              > ".work/diretta/$(basename "$m").imports"
+              > ".work/diretta/$name.imports"
+            # Record only ELF symbols exposed through the kernel module export table.
+            arm-linux-gnueabihf-nm -g --defined-only "$m" 2>/dev/null \
+              | awk '$NF ~ /^__ksymtab_/ {sub(/^__ksymtab_/, "", $NF); print $NF}' \
+              | sort -u > ".work/diretta/$name.exports"
           done
+          comm -12 .work/diretta/alsa_bridge.ko.imports .work/diretta/diretta_direct.ko.exports \
+            > .work/diretta/alsa_bridge-from-diretta_direct.txt
+          comm -12 .work/diretta/diretta_direct.ko.imports .work/diretta/alsa_bridge.ko.exports \
+            > .work/diretta/diretta_direct-from-alsa_bridge.txt
 
       - name: Verify original 6.2.15-215 ABI reference
         shell: bash
@@ -109,12 +118,19 @@ jobs:
           done
 
           for name in alsa_bridge.ko diretta_direct.ko; do
+            sibling="alsa_bridge.ko"
+            [[ "$name" == "alsa_bridge.ko" ]] && sibling="diretta_direct.ko"
             while IFS= read -r symbol; do
               [[ -n "$symbol" ]] || continue
-              awk -v s="$symbol" '$2==s {ok=1} END{exit !ok}' "$original_symvers" || {
-                echo "::error::Original Module.symvers lacks imported symbol $symbol from $name"
-                exit 1
-              }
+              if awk -v s="$symbol" '$2==s {ok=1} END{exit !ok}' "$original_symvers"; then
+                continue
+              fi
+              if grep -Fxq "$symbol" ".work/diretta/$sibling.exports"; then
+                echo "$name -> $sibling: $symbol" >> .work/diretta/original-module-dependencies.txt
+                continue
+              fi
+              echo "::error::Original kernel exports and sibling module exports both lack $symbol imported by $name"
+              exit 1
             done < ".work/diretta/$name.imports"
           done
 
@@ -439,14 +455,23 @@ jobs:
           done
 
           missing_total=0
+          : > "$GITHUB_WORKSPACE/.work/diretta/target-module-dependencies.txt"
           for name in alsa_bridge.ko diretta_direct.ko; do
             imports="$GITHUB_WORKSPACE/.work/diretta/$name.imports"
             missing="$GITHUB_WORKSPACE/.work/diretta/$name.missing-target"
+            sibling="alsa_bridge.ko"
+            [[ "$name" == "alsa_bridge.ko" ]] && sibling="diretta_direct.ko"
             : > "$missing"
             while IFS= read -r symbol; do
               [[ -n "$symbol" ]] || continue
-              awk -v s="$symbol" '$2==s {ok=1} END{exit !ok}' "$SRC/Module.symvers" \
-                || echo "$symbol" >> "$missing"
+              if awk -v s="$symbol" '$2==s {ok=1} END{exit !ok}' "$SRC/Module.symvers"; then
+                continue
+              fi
+              if grep -Fxq "$symbol" "$GITHUB_WORKSPACE/.work/diretta/$sibling.exports"; then
+                echo "$name -> $sibling: $symbol" >> "$GITHUB_WORKSPACE/.work/diretta/target-module-dependencies.txt"
+                continue
+              fi
+              echo "$symbol" >> "$missing"
             done < "$imports"
             count="$(wc -l < "$missing")"
             missing_total=$((missing_total + count))
@@ -467,7 +492,10 @@ jobs:
               awk -v s="$sym" '$2==s {print}' "$SRC/Module.symvers"
             done
             echo
-            echo "All undefined imports of both original modules exist in target Module.symvers."
+            echo "All undefined imports resolve from target Module.symvers or the sibling Diretta module export table."
+            echo
+            echo "Cross-module dependencies:"
+            cat "$GITHUB_WORKSPACE/.work/diretta/target-module-dependencies.txt" || true
           } | tee "$GITHUB_WORKSPACE/diretta-scheme3-compatibility-report.txt"
 
       - name: Package kernel7.img, initramfs7, DTB and modules
