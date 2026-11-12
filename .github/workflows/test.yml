@@ -523,9 +523,9 @@ jobs:
           # this baseline it is commonly built as a module. Its component
           # objects (usb.o/scsiglue.o) are linked into usb-storage.ko rather
           # than appearing as separate members in drivers/usb/storage/built-in.a.
-          if grep -qx 'CONFIG_USB_STORAGE=y' .config; then
+          if grep -qx 'CONFIG_USB_STORAGE=y' "$SRC/.config"; then
             require_archive_member "$SRC/drivers/usb/storage/built-in.a" "usb-storage.o"
-          elif grep -qx 'CONFIG_USB_STORAGE=m' .config; then
+          elif grep -qx 'CONFIG_USB_STORAGE=m' "$SRC/.config"; then
             require_file "$SRC/drivers/usb/storage/usb-storage.ko"
           else
             echo "::error::USB_STORAGE is not enabled in the final config"
