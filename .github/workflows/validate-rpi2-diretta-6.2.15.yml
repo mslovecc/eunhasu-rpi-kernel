@@ -75,7 +75,7 @@ jobs:
 
           mismatches = []
           for name, want in sorted(requested.items()):
-              got = final.get(name, "<absent>")
+              got = final.get(name, "n" if want == "n" else "<absent>")
               if got != want:
                   mismatches.append((name, want, got))
 
